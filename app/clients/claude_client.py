@@ -1,7 +1,7 @@
 """Claude API 客户端"""
 
 import json
-from typing import AsyncGenerator, Dict, Optional
+from typing import AsyncGenerator, Dict, Any, Tuple
 
 from app.utils.logger import logger
 
@@ -13,7 +13,7 @@ class ClaudeClient(BaseClient):
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://api.anthropic.com/v1/messages",
+        api_url: str,
         provider: str = "anthropic",
         proxy: str = None,
     ):
@@ -28,14 +28,102 @@ class ClaudeClient(BaseClient):
         super().__init__(api_key, api_url, proxy=proxy)
         self.provider = provider
 
-    def data_format(
-        self,
-        messages: list,
-        model_arg: Dict[str, Optional[float]],
+
+    def _format_openrouter_data(
+        self,messages: list,
+        model_arg: Dict[str, Any],
         model: str,
         system_prompt: str = None,
         stream: bool = True
-    ):
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        # 转换模型名称为 OpenRouter 格式
+        model = "anthropic/" + model
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/ErlichLiu/DeepClaude",  # OpenRouter 需要
+            "X-Title": "DeepClaude",  # OpenRouter 需要
+        }
+
+        # 传递 OpenRouterOneAPI system prompt
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+
+        data = {
+            "model": model,  # OpenRouter 使用 anthropic/claude-3.5-sonnet 格式
+            "messages": messages,
+            "stream": stream,
+        }
+        data = self._add_model_params(data, model_arg)
+        return headers,data
+
+    def _format_oneapi_data(
+        self,messages: list,
+        model_arg: Dict[str, Any],
+        model: str,
+        system_prompt: str = None,
+        stream: bool = True
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # 传递 OneAPI system prompt
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+
+        data = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+        }
+        data = self._add_model_params(data, model_arg)
+        return headers,data
+
+    def _format_anthropic_data(
+        self,messages: list,
+        model_arg: Dict[str, Any],
+        model: str,
+        system_prompt: str = None,
+        stream: bool = True
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "accept": "text/event-stream" if stream else "application/json",
+        }
+
+        data = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 8192,
+            "stream": stream,
+        }
+
+        # Anthropic 原生 API 支持 system 参数
+        if system_prompt:
+            data["system"] = system_prompt
+
+        # Anthropic目前只支持温度
+        model_arg_anthropic = {
+            "temperature":  model_arg.get("temperature"),
+            "top_p": model_arg.get("top_p")
+        }
+
+        data = self._add_model_params(data, model_arg_anthropic)
+        return headers,data
+
+    def data_format(
+        self,
+        messages: list,
+        model_arg: Dict[str, Any],
+        model: str,
+        system_prompt: str = None,
+        stream: bool = True
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
         """数据格式化
 
         Args:
@@ -50,98 +138,26 @@ class ClaudeClient(BaseClient):
                 内容类型: "answer"
                 内容: 实际的文本内容
         """
-        if self.provider == "openrouter":
-            # 转换模型名称为 OpenRouter 格式
-            model = "anthropic/" + model
+        formatters = {
+            "openrouter": self._format_openrouter_data,
+            "oneapi": self._format_oneapi_data,
+            "anthropic": self._format_anthropic_data
+        }
 
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/ErlichLiu/DeepClaude",  # OpenRouter 需要
-                "X-Title": "DeepClaude",  # OpenRouter 需要
-            }
-
-            # 传递 OpenRouterOneAPI system prompt
-            if system_prompt:
-                messages.insert(0, {"role": "system", "content": system_prompt})
-
-            data = {
-                "model": model,  # OpenRouter 使用 anthropic/claude-3.5-sonnet 格式
-                "messages": messages,
-                "stream": stream,
-            }
-            # 只有当参数值存在时才添加到请求数据中
-            if model_arg.get("temperature") is not None:
-                data["temperature"] = model_arg["temperature"]
-            if model_arg.get("top_p") is not None:
-                data["top_p"] = model_arg["top_p"]
-            if model_arg.get("presence_penalty") is not None:
-                data["presence_penalty"] = model_arg["presence_penalty"]
-            if model_arg.get("frequency_penalty") is not None:
-                data["frequency_penalty"] = model_arg["frequency_penalty"]
-
-        elif self.provider == "oneapi":
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-
-            # 传递 OneAPI system prompt
-            if system_prompt:
-                messages.insert(0, {"role": "system", "content": system_prompt})
-
-            data = {
-                "model": model,
-                "messages": messages,
-                "stream": stream,
-            }
-            # 只有当参数值存在时才添加到请求数据中
-            if model_arg.get("temperature") is not None:
-                data["temperature"] = model_arg["temperature"]
-            if model_arg.get("top_p") is not None:
-                data["top_p"] = model_arg["top_p"]
-            if model_arg.get("presence_penalty") is not None:
-                data["presence_penalty"] = model_arg["presence_penalty"]
-            if model_arg.get("frequency_penalty") is not None:
-                data["frequency_penalty"] = model_arg["frequency_penalty"]
-
-        elif self.provider == "anthropic":
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-                "accept": "text/event-stream" if stream else "application/json",
-            }
-
-            data = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": 8192,
-                "stream": stream,
-            }
-
-            # Anthropic 原生 API 支持 system 参数
-            if system_prompt:
-                data["system"] = system_prompt
-            # 只有当参数值存在时才添加到请求数据中
-            if model_arg.get("temperature") is not None:
-                data["temperature"] = model_arg["temperature"]
-            if model_arg.get("top_p") is not None:
-                data["top_p"] = model_arg["top_p"]
-
-        else:
+        formatter = formatters.get(self.provider)
+        if not formatter:
             raise ValueError(f"不支持的Claude Provider: {self.provider}")
 
-        return headers, data
-
+        return formatter(messages, model_arg, model, system_prompt, stream)
 
     async def chat(
         self,
         messages: list,
-        model_arg: Dict[str, Optional[float]],
         model: str,
+        model_arg: Dict[str, Any] = None,
         stream: bool = True,
-        system_prompt: str = None,)-> AsyncGenerator[tuple[str, str], None]:
+        system_prompt: str = None
+    ) -> Dict[str, Any]:
         """非流式对话
 
         Args:
@@ -158,31 +174,33 @@ class ClaudeClient(BaseClient):
         """
         headers, data = self.data_format(messages, model_arg, model, system_prompt, stream)
         logger.debug("开始对话: ")
-        async for chunk in self._make_request(headers, data):
-            try:
-                response = json.loads(chunk.decode("utf-8"))
-                if self.provider in ("openrouter", "oneapi"):
-                    content = (
-                        response.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    if content:
-                        yield "answer", content
-                elif self.provider == "anthropic":
-                    content = response.get("content", [{}])[0].get("text", "")
-                    if content:
-                        yield "answer", content
-                else:
-                    raise ValueError(f"不支持的Claude Provider: {self.provider}")
-            except json.JSONDecodeError:
-                continue
+        # 使用非流式请求方法获取完整响应
+        try:
+            response_bytes = await self._make_non_streaming_request(headers, data)
+
+            # 解析响应
+            response = json.loads(response_bytes.decode("utf-8"))
+
+            if self.provider in ("openrouter", "oneapi"):
+                content =  response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            elif self.provider == "anthropic":
+                content = response.get("content", [{}])[0].get("text", "")
+            else:
+                raise ValueError(f"不支持的Claude Provider: {self.provider}")
+
+            if content:
+                yield "answer", content
+            else:
+                logger.warning("%s响应中未找到有效内容", self.provider)
+        except (KeyError, IndexError) as e:
+            logger.error("解析%s响应时出错: %s", self.provider, e)
+            raise ValueError(f"无法解析{self.provider}的响应格式") from e
 
     async def stream_chat(
         self,
         messages: list,
-        model_arg: Dict[str, Optional[float]],
         model: str,
+        model_arg: Dict[str, Any] = None,
         stream: bool = True,
         system_prompt: str = None,
     ) -> AsyncGenerator[tuple[str, str], None]:
@@ -218,22 +236,19 @@ class ClaudeClient(BaseClient):
                         data = json.loads(json_str)
                         if self.provider in ("openrouter", "oneapi"):
                             # OpenRouter/OneApi 格式
-                            content = (
-                                data.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content", "")
-                            )
-                            if content:
-                                yield "answer", content
+                            content = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
                         elif self.provider == "anthropic":
                             # Anthropic 格式
                             if data.get("type") == "content_block_delta":
                                 content = data.get("delta", {}).get("text", "")
-                                if content:
-                                    yield "answer", content
+                            else:
+                                raise ValueError( f"Anthropic 格式错误: {data}" )
                         else:
-                            raise ValueError(
-                                f"不支持的Claude Provider: {self.provider}"
-                            )
-                    except json.JSONDecodeError:
-                        continue
+                            raise ValueError( f"不支持的Claude Provider: {self.provider}" )
+                        if content:
+                            yield "answer", content
+                        else:
+                            logger.warning("%s响应中未找到有效内容", self.provider)
+                    except (KeyError, IndexError) as e:
+                        logger.error("解析%s响应时出错: %s", self.provider, e)
+                        raise ValueError(f"无法解析{self.provider}的响应格式") from e

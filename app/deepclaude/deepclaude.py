@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from typing import Dict, Optional, AsyncGenerator
+from aiohttp.client_exceptions import ClientError
 
 import tiktoken
 
@@ -108,8 +109,10 @@ class DeepClaude:
                         await claude_queue.put("".join(reasoning_content))
                         break
             except Exception as e:
-                logger.error("处理 DeepSeek 流时发生错误: %s", str(e))
                 await claude_queue.put("")
+                error_msg = f"处理 DeepSeek 流时发生错误: {str(e)}"
+                logger.error(error_msg)
+                raise ClientError(error_msg) from e
             # 用 None 标记 DeepSeek 任务结束
             logger.info("DeepSeek 任务处理完成，标记结束")
             await output_queue.put(None)
@@ -185,7 +188,10 @@ class DeepClaude:
                             f"data: {json.dumps(response)}\n\n".encode("utf-8")
                         )
             except Exception as e:
-                logger.error("处理 Claude 流时发生错误: %s", str(e))
+                await output_queue.put(None)
+                error_msg = f"处理 Claude 流时发生错误: {str(e)}"
+                logger.error(error_msg)
+                raise ClientError(error_msg) from e
             # 用 None 标记 Claude 任务结束
             logger.info("Claude 任务处理完成，标记结束")
             await output_queue.put(None)
@@ -238,9 +244,10 @@ class DeepClaude:
                 elif content_type == "content":
                     break
         except Exception as e:
-            logger.error("获取 DeepSeek 推理内容时发生错误: %s", str(e))
-            reasoning_content = ["获取推理内容失败"]
-
+            error_msg = f"获取 DeepSeek 推理内容时发生错误: {str(e)}"
+            logger.error(error_msg)
+            raise ClientError(error_msg) from e
+            # reasoning_content = ["获取推理内容失败"]
         # 2. 构造 Claude 的输入消息
         reasoning = "".join(reasoning_content)
         claude_messages = messages.copy()
@@ -325,5 +332,6 @@ class DeepClaude:
                 },
             }
         except Exception as e:
-            logger.error("获取 Claude 响应时发生错误: %s", str(e))
-            raise e
+            error_msg = f"获取 Claude 响应时发生错误: {str(e)}"
+            logger.error(error_msg)
+            raise ClientError(error_msg) from e

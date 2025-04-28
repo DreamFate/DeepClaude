@@ -56,7 +56,7 @@ class OpenAICompatibleClient(BaseClient):
         return messages
 
     async def chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Optional[float]]
+        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """非流式对话
 
@@ -79,23 +79,13 @@ class OpenAICompatibleClient(BaseClient):
             "stream": False,
         }
 
-        # 只有当参数值存在时才添加到请求数据中
-        if model_arg.get("temperature") is not None:
-            data["temperature"] = model_arg["temperature"]
-        if model_arg.get("top_p") is not None:
-            data["top_p"] = model_arg["top_p"]
-        if model_arg.get("presence_penalty") is not None:
-            data["presence_penalty"] = model_arg["presence_penalty"]
-        if model_arg.get("frequency_penalty") is not None:
-            data["frequency_penalty"] = model_arg["frequency_penalty"]
-
+        data = self._add_model_params(data, model_arg)
         try:
-            response_chunks = []
-            async for chunk in self._make_request(headers, data):
-                response_chunks.append(chunk)
+            response_bytes = await self._make_non_streaming_request(headers, data)
 
-            response_text = b"".join(response_chunks).decode("utf-8")
-            return json.loads(response_text)
+            # 解析响应
+            response = json.loads(response_bytes.decode("utf-8"))
+            return response
 
         except Exception as e:
             error_msg = f"Chat请求失败: {str(e)}"
@@ -103,7 +93,7 @@ class OpenAICompatibleClient(BaseClient):
             raise ClientError(error_msg) from e
 
     async def stream_chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Optional[float]]
+        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
     ) -> AsyncGenerator[tuple[str, str], None]:
         """流式对话
 
@@ -126,16 +116,7 @@ class OpenAICompatibleClient(BaseClient):
             "stream": True,
         }
 
-        # 只有当参数值存在时才添加到请求数据中
-        if model_arg.get("temperature") is not None:
-            data["temperature"] = model_arg["temperature"]
-        if model_arg.get("top_p") is not None:
-            data["top_p"] = model_arg["top_p"]
-        if model_arg.get("presence_penalty") is not None:
-            data["presence_penalty"] = model_arg["presence_penalty"]
-        if model_arg.get("frequency_penalty") is not None:
-            data["frequency_penalty"] = model_arg["frequency_penalty"]
-
+        data = self._add_model_params(data, model_arg)
 
         buffer = ""
         try:

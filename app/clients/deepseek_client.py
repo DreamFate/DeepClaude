@@ -2,9 +2,9 @@
 
 import json
 from typing import AsyncGenerator
+from aiohttp.client_exceptions import ClientError
 
 from app.utils.logger import logger
-
 from .base_client import BaseClient
 
 
@@ -13,7 +13,7 @@ class DeepSeekClient(BaseClient):
     def __init__(
         self,
         api_key: str,
-        api_url: str = "https://api.siliconflow.cn/v1/chat/completions",
+        api_url: str,
         proxy: str = None,
     ):
         """初始化 DeepSeek 客户端
@@ -51,7 +51,7 @@ class DeepSeekClient(BaseClient):
     async def stream_chat(
         self,
         messages: list,
-        model: str = "deepseek-ai/DeepSeek-R1",
+        model: str,
         is_origin_reasoning: bool = True,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """流式对话
@@ -59,6 +59,7 @@ class DeepSeekClient(BaseClient):
         Args:
             messages: 消息列表
             model: 模型名称
+            is_origin_reasoning: 是否使用原生推理，默认为 True
 
         Yields:
             tuple[str, str]: (内容类型, 内容)
@@ -119,43 +120,37 @@ class DeepSeekClient(BaseClient):
                                     yield "content", content
                             else:
                                 # 处理其他模型的输出
-                                if delta.get("content"):
-                                    content = delta["content"]
-                                    if content == "":  # 只跳过完全空的字符串
-                                        continue
-                                    logger.debug("非原生推理内容：%s", content)
-                                    accumulated_content += content
+                                content = delta.get("content","")
+                                if content == "":  # 只跳过完全空的字符串
+                                    continue
+                                logger.debug("非原生推理内容：%s", content)
+                                accumulated_content += content
 
-                                    # 检查累积的内容是否包含完整的 think 标签对
-                                    is_complete, processed_content = (
-                                        self._process_think_tag_content(
-                                            accumulated_content
-                                        )
-                                    )
-
-                                    if "<think>" in content and not is_collecting_think:
-                                        # 开始收集推理内容
-                                        logger.debug("开始收集推理内容：%s", content)
-                                        is_collecting_think = True
+                                if "<think>" in content and not is_collecting_think:
+                                    # 开始收集推理内容
+                                    logger.debug("开始收集推理内容")
+                                    is_collecting_think = True
+                                    yield "reasoning", content
+                                elif is_collecting_think:
+                                    if "</think>" in content:
+                                        # 推理内容结束
+                                        logger.debug("推理内容结束")
+                                        is_collecting_think = False
                                         yield "reasoning", content
-                                    elif is_collecting_think:
-                                        if "</think>" in content:
-                                            # 推理内容结束
-                                            logger.debug("推理内容结束：%s", content)
-                                            is_collecting_think = False
-                                            yield "reasoning", content
-                                            # 输出空的 content 来触发 Claude 处理
-                                            yield "content", ""
-                                            # 重置累积内容
-                                            accumulated_content = ""
-                                        else:
-                                            # 继续收集推理内容
-                                            yield "reasoning", content
+                                        # 输出空的 content 来触发 Claude 处理
+                                        yield "content", ""
+                                        # 重置累积内容
+                                        accumulated_content = ""
                                     else:
-                                        # 普通内容
-                                        yield "content", content
+                                        # 继续收集推理内容
+                                        yield "reasoning", content
+                                else:
+                                    # 普通内容
+                                    yield "content", content
 
             except json.JSONDecodeError as e:
                 logger.error("JSON 解析错误: %s", e)
             except Exception as e:
-                logger.error("处理 chunk 时发生错误: %s", e)
+                error_msg = f"Stream chat请求失败: {str(e)}"
+                logger.error(error_msg)
+                raise ClientError(error_msg) from e

@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from typing import AsyncGenerator, Dict, Any, List
+from aiohttp.client_exceptions import ClientError
 
 from app.clients import DeepSeekClient,OpenAICompatibleClient
 from app.utils.logger import logger
@@ -32,9 +33,9 @@ class OpenAICompatibleComposite:
     async def chat_completions_with_stream(
         self,
         messages: List[Dict[str, str]],
-        model_arg: tuple[float, float, float, float],
-        deepseek_model: str = "deepseek-reasoner",
-        target_model: str = "",
+        deepseek_model: str,
+        target_model: str,
+        model_arg: Dict[str, Any] = None
     ) -> AsyncGenerator[bytes, None]:
         """处理完整的流式输出过程
 
@@ -74,7 +75,7 @@ class OpenAICompatibleComposite:
         reasoning_content = []
 
         async def process_deepseek():
-            logger.info(f"开始处理 DeepSeek 流，使用模型：{deepseek_model}")
+            logger.info("开始处理 DeepSeek 流，使用模型：%s", deepseek_model)
             try:
                 async for content_type, content in self.deepseek_client.stream_chat(
                     messages, deepseek_model, self.is_origin_reasoning
@@ -102,14 +103,14 @@ class OpenAICompatibleComposite:
                         )
                     elif content_type == "content":
                         # 当收到 content 类型时，将完整的推理内容发送到 reasoning_queue
-                        logger.info(
-                            f"DeepSeek 推理完成，收集到的推理内容长度：{len(''.join(reasoning_content))}"
-                        )
+                        logger.info("DeepSeek 推理完成，收集到的推理内容长度：%d", len(''.join(reasoning_content)))
                         await reasoning_queue.put("".join(reasoning_content))
                         break
             except Exception as e:
-                logger.error(f"处理 DeepSeek 流时发生错误: {e}")
-                await reasoning_queue.put("")
+                await reasoning_queue.put(None)
+                error_msg = f"处理 DeepSeek 流时发生错误: {str(e)}"
+                logger.error(error_msg)
+                raise ClientError(error_msg) from e
             # 标记 DeepSeek 任务结束
             logger.info("DeepSeek 任务处理完成，标记结束")
             await output_queue.put(None)
