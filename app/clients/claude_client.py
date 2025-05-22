@@ -2,6 +2,7 @@
 
 import json
 from typing import AsyncGenerator, Dict, Any, Tuple
+import time
 
 from app.utils.logger import logger
 
@@ -99,7 +100,6 @@ class ClaudeClient(BaseClient):
         data = {
             "model": model,
             "messages": messages,
-            "max_tokens": 8192,
             "stream": stream,
         }
 
@@ -107,13 +107,7 @@ class ClaudeClient(BaseClient):
         if system_prompt:
             data["system"] = system_prompt
 
-        # Anthropic目前只支持温度
-        model_arg_anthropic = {
-            "temperature":  model_arg.get("temperature"),
-            "top_p": model_arg.get("top_p")
-        }
-
-        data = self._add_model_params(data, model_arg_anthropic)
+        data = self._add_model_params(data, model_arg)
         return headers,data
 
     def data_format(
@@ -167,15 +161,15 @@ class ClaudeClient(BaseClient):
             stream: 是否使用流式输出，默认为 True
             system_prompt: 系统提示
 
-        Yields:
-            tuple[str, str]: (role, content) 消息元组
-                role: 角色
-                content: 实际的文本内容
+        Returns:
+            Dict[str, Any]: OpenAI 格式的完整响应
         """
         headers, data = self.data_format(messages, model_arg, model, system_prompt, stream)
         logger.debug("开始对话: ")
         # 使用非流式请求方法获取完整响应
         try:
+            chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+            created_time = int(time.time())
             response_bytes = await self._make_non_streaming_request(headers, data)
 
             # 解析响应
@@ -186,15 +180,20 @@ class ClaudeClient(BaseClient):
             elif self.provider == "anthropic":
                 content = response.get("content", [{}])[0].get("text", "")
             else:
-                raise ValueError(f"不支持的Claude Provider: {self.provider}")
+                return response
 
-            if content:
-                yield "answer", content
-            else:
-                logger.warning("%s响应中未找到有效内容", self.provider)
+            if not content:
+                logger.debug("%s响应中未找到有效内容", self.provider)
+                content = ""
+
+            return self.format_openai_compatible_response(chat_id,created_time,model,content)
+
         except (KeyError, IndexError) as e:
             logger.error("解析%s响应时出错: %s", self.provider, e)
-            raise ValueError(f"无法解析{self.provider}的响应格式") from e
+            return response
+        except Exception as e:
+            logger.error("%s对话时出错: %s", self.provider, e)
+            raise ValueError(f"{self.provider}对话出错") from e
 
     async def stream_chat(
         self,
@@ -221,6 +220,8 @@ class ClaudeClient(BaseClient):
         headers, data = self.data_format(messages, model_arg, model, system_prompt, stream)
 
         logger.debug("开始对话: ")
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created_time = int(time.time())
         async for chunk in self._make_request(headers, data):
             chunk_str = chunk.decode("utf-8")
             if not chunk_str.strip():
@@ -234,21 +235,33 @@ class ClaudeClient(BaseClient):
 
                     try:
                         data = json.loads(json_str)
+                        content = ""
                         if self.provider in ("openrouter", "oneapi"):
                             # OpenRouter/OneApi 格式
                             content = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if not content:
+                                logger.error("OpenRouter/OneApi 格式错误: %s", data)
+                                yield data
                         elif self.provider == "anthropic":
                             # Anthropic 格式
                             if data.get("type") == "content_block_delta":
                                 content = data.get("delta", {}).get("text", "")
                             else:
-                                raise ValueError( f"Anthropic 格式错误: {data}" )
+                                logger.error("Anthropic 格式错误: %s", data)
+                                yield data
                         else:
-                            raise ValueError( f"不支持的Claude Provider: {self.provider}" )
-                        if content:
-                            yield "answer", content
-                        else:
-                            logger.warning("%s响应中未找到有效内容", self.provider)
+                            yield data
+                        if not content:
+                            logger.debug("%s响应中未找到有效内容", self.provider)
+
+                        yield self.format_openai_compatible_stream_response(
+                            chat_id,
+                            created_time,
+                            model,content
+                        )
                     except (KeyError, IndexError) as e:
                         logger.error("解析%s响应时出错: %s", self.provider, e)
-                        raise ValueError(f"无法解析{self.provider}的响应格式") from e
+                        yield data
+                    except Exception as e:
+                        logger.error("%s对话时出错: %s", self.provider, e)
+                        raise ValueError(f"{self.provider}对话出错") from e

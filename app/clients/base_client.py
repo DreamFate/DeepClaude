@@ -2,8 +2,11 @@
 
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional, Dict, Any, List, Tuple
+import json
 
+import time
 import aiohttp
+
 from aiohttp.client_exceptions import ClientError, ServerTimeoutError
 
 from app.utils.logger import logger
@@ -78,10 +81,11 @@ class BaseClient(ABC):
         if model_arg is None:
             return data
 
-        params = ["temperature", "top_p", "presence_penalty", "frequency_penalty"]
-        for param in params:
-            if model_arg.get(param) is not None:
-                data[param] = model_arg[param]
+        # 将model_arg中的所有键值对添加到data中
+        for key, value in model_arg.items():
+            if value is not None:
+                data[key] = value
+
         return data
 
     async def _make_request(
@@ -202,9 +206,161 @@ class BaseClient(ABC):
 
             raise
 
+    def format_openai_compatible_response(
+        self,
+        chat_id: str,
+        created_time: int,
+        model: str,
+        content: str,
+        reasoning_content: str = None,
+    ) -> Dict[str, Any]:
+        """将内容格式化为 OpenAI 兼容格式
+
+        Args:
+            chat_id: 对话ID
+            created_time: 创建时间
+            content: 模型生成的内容
+            model: 模型名称
+            reasoning_content: 模型生成的推理内容，默认为None
+
+        Returns:
+            Dict[str, Any]: OpenAI 兼容格式的响应
+        """
+
+        # 构造消息对象
+        message = {
+            "role": "assistant",
+            "content": content
+        }
+
+        # 如果有推理内容，则添加到消息中
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
+
+        # 构造OpenAI兼容格式响应
+        return {
+            "id": chat_id,
+            "object": "chat.completion",
+            "created": created_time,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+
+    def format_openai_compatible_stream_response(
+        self,
+        chat_id: str,
+        created_time: int,
+        model: str,
+        content: str,
+        reasoning_content: str = None,
+    ) -> Dict[str, Any]:
+        """将内容格式化为 OpenAI 兼容格式流式输出
+
+        Args:
+            chat_id: 对话ID
+            created_time: 创建时间
+            content: 模型生成的内容
+            reasoning_content: 模型生成的推理内容，默认为None
+            model: 模型名称
+
+        Returns:
+            Dict[str, Any]: OpenAI 兼容格式流式输出的响应
+        """
+
+        # 构造delta对象
+        delta = {
+            "role": "assistant",
+            "content": content
+        }
+
+        # 如果有推理内容，则添加到delta中
+        if reasoning_content:
+            delta["reasoning_content"] = reasoning_content
+
+        # 构造OpenAI兼容格式响应
+        return {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": delta
+            }]
+        }
+
+
+    async def original_chat(
+        self,
+        headers: Dict[str, Any],
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """原始非流式对话
+
+        Args:
+            headers: 请求头
+            data: 请求数据
+
+        Returns:
+            Dict[str, Any]: OpenAI 格式的完整响应
+        """
+        logger.debug("开始原始非流式对话: ")
+        # 使用非流式请求方法获取完整响应
+        try:
+            response_bytes = await self._make_non_streaming_request(headers, data)
+
+            # 解析响应
+            response = json.loads(response_bytes.decode("utf-8"))
+
+            return response
+        except (KeyError, IndexError) as e:
+            logger.error("解析响应时出错: %s", e)
+            raise ValueError("无法解析响应格式") from e
+
+    async def original_stream_chat(
+        self,
+        headers: Dict[str, Any],
+        data: Dict[str, Any],
+    ) -> AsyncGenerator[tuple[str, str], None]:
+        """原始流式对话
+
+        Args:
+            headers: 请求头
+            data: 请求数据
+
+        Yields:
+            tuple[str, str]: (内容类型, 内容)
+                内容类型: "answer"
+                内容: 实际的文本内容
+        """
+
+        try:
+            async for chunk in self._make_request(headers, data):
+                try:
+                    chunk_str = chunk.decode("utf-8")
+                    if not chunk_str.strip():
+                        continue
+
+                    yield chunk_str
+                except UnicodeDecodeError as e:
+                    # 记录错误但继续处理
+                    logger.error("解码响应数据块时出错，跳过此块: %s", e)
+                    continue
+        except Exception as e:
+            # 致命错误，记录并抛出
+            logger.error("原生流式对话过程中发生错误: %s", e)
+            raise ValueError(f"原生流式对话过程中发生错误: {e}") from e
+
+
     @abstractmethod
     async def stream_chat(
-        self, messages: List[Dict[str, str]], model: str
+        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
     ) -> AsyncGenerator[Tuple[str, str], None]:
         """流式对话，由子类实现
 
@@ -219,7 +375,7 @@ class BaseClient(ABC):
 
     @abstractmethod
     async def chat(
-        self, messages: List[Dict[str, str]], model: str
+        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """非流式对话，由子类实现
 

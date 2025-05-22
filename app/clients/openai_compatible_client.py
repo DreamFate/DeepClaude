@@ -1,7 +1,8 @@
 """OpenAI 兼容格式的客户端类,用于处理符合 OpenAI API 格式的服务"""
 
 import json
-from typing import AsyncGenerator, Optional, Dict, Any, List
+import time
+from typing import AsyncGenerator, Optional, Dict, Any, List,Tuple
 
 import aiohttp
 from aiohttp.client_exceptions import ClientError
@@ -33,27 +34,29 @@ class OpenAICompatibleClient(BaseClient):
         """
         super().__init__(api_key, api_url, timeout, proxy=proxy)
 
-    def _get_headers(self) -> Dict[str, str]:
-        """获取请求头
-
-        Returns:
-            Dict[str, str]: 请求头字典
-        """
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-    def _prepare_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """处理消息格式
+    def _format_data(self,model:str,messages:str,stream:bool = True) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        """将数据格式化为 OpenAI API 可以接受的格式
 
         Args:
-            messages: 原始消息列表
+            model: 模型名称
+            messages: 消息列表
+            stream: 是否使用流式输出，默认为 True
 
         Returns:
-            List[Dict[str, str]]: 处理后的消息列表
+            headers: 请求头
+            data: 请求体
         """
-        return messages
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": model,
+            "messages": messages,
+            "stream": stream
+        }
+        return headers,data
 
     async def chat(
         self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
@@ -70,14 +73,9 @@ class OpenAICompatibleClient(BaseClient):
         Raises:
             ClientError: 请求错误
         """
-        headers = self._get_headers()
-        processed_messages = self._prepare_messages(messages)
-
-        data = {
-            "model": model,
-            "messages": processed_messages,
-            "stream": False,
-        }
+        headers,data = self._format_data(model,messages,stream=False)
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created_time = int(time.time())
 
         data = self._add_model_params(data, model_arg)
         try:
@@ -85,7 +83,18 @@ class OpenAICompatibleClient(BaseClient):
 
             # 解析响应
             response = json.loads(response_bytes.decode("utf-8"))
-            return response
+            message = response["choices"][0].get("message", {})
+            content = message.get("content", "")
+            reasoning_content = message.get("reasoning_content")
+
+            # 使用基类的格式化方法重新格式化响应
+            return self.format_openai_compatible_response(
+                chat_id,
+                created_time,
+                model,
+                content,
+                reasoning_content
+            )
 
         except Exception as e:
             error_msg = f"Chat请求失败: {str(e)}"
@@ -94,29 +103,24 @@ class OpenAICompatibleClient(BaseClient):
 
     async def stream_chat(
         self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
-    ) -> AsyncGenerator[tuple[str, str], None]:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式对话
 
         Args:
             messages: 消息列表
             model: 模型名称
+            model_arg: 模型参数
 
         Yields:
-            tuple[str, str]: (role, content) 消息元组
+            Dict[str, Any]: OpenAI 兼容格式的流式响应
 
         Raises:
             ClientError: 请求错误
         """
-        headers = self._get_headers()
-        processed_messages = self._prepare_messages(messages)
-
-        data = {
-            "model": model,
-            "messages": processed_messages,
-            "stream": True,
-        }
-
+        headers, data = self._format_data(model, messages, stream=True)
         data = self._add_model_params(data, model_arg)
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created_time = int(time.time())
 
         buffer = ""
         try:
@@ -135,20 +139,29 @@ class OpenAICompatibleClient(BaseClient):
                     # 解析 SSE 数据
                     if line.startswith("data: "):
                         json_str = line[6:].strip()
-                        try:
-                            response = json.loads(json_str)
-                            if (
-                                "choices" in response
-                                and len(response["choices"]) > 0
-                                and "delta" in response["choices"][0]
-                            ):
-                                delta = response["choices"][0]["delta"]
-                                if "content" in delta:
-                                    yield "assistant", delta["content"]
-                        except json.JSONDecodeError as e:
-                            logger.error("JSON解析错误: %s, 原始数据: %s", str(e), json_str)
-                            continue
+                        response = json.loads(json_str)
+                        if (
+                            "choices" in response
+                            and len(response["choices"]) > 0
+                            and "delta" in response["choices"][0]
+                        ):
+                            delta = response["choices"][0]["delta"]
+                            content = delta.get("content", "")
+                            reasoning_content = delta.get("reasoning_content")
 
+                            # 使用基类的格式化方法重新格式化流式响应
+                            yield self.format_openai_compatible_stream_response(
+                                chat_id,
+                                created_time,
+                                model,
+                                content,
+                                reasoning_content
+                            )
+
+        except json.JSONDecodeError as e:
+            error_msg = f"JSON解析错误: {str(e)}"
+            logger.error(error_msg)
+            raise ClientError(error_msg) from e
         except Exception as e:
             error_msg = f"Stream chat请求失败: {str(e)}"
             logger.error(error_msg)
