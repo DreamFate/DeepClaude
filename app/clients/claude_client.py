@@ -6,6 +6,11 @@ import time
 
 from app.utils.logger import logger
 
+from app.chatcompletion.openai_compatible import (
+    OpenAICompletion, OpenAIChoice, OpenAIMessage,
+    OpenAIStreamCompletion, OpenAIStreamChoice,
+    OpenAIStreamDelta
+    )
 from .base_client import BaseClient
 
 
@@ -186,7 +191,12 @@ class ClaudeClient(BaseClient):
                 logger.debug("%s响应中未找到有效内容", self.provider)
                 content = ""
 
-            return self.format_openai_compatible_response(chat_id,created_time,model,content)
+            return OpenAICompletion(
+                id=chat_id,
+                model=model,
+                choices=[OpenAIChoice(message=OpenAIMessage(content=content))],
+                created=created_time,
+            )
 
         except (KeyError, IndexError) as e:
             logger.error("解析%s响应时出错: %s", self.provider, e)
@@ -254,10 +264,11 @@ class ClaudeClient(BaseClient):
                         if not content:
                             logger.debug("%s响应中未找到有效内容", self.provider)
 
-                        yield self.format_openai_compatible_stream_response(
-                            chat_id,
-                            created_time,
-                            model,content
+                        yield OpenAIStreamCompletion(
+                            id=chat_id,
+                            model=model,
+                            choices=[OpenAIStreamChoice(delta=OpenAIStreamDelta(content=content))],
+                            created=created_time,
                         )
                     except (KeyError, IndexError) as e:
                         logger.error("解析%s响应时出错: %s", self.provider, e)

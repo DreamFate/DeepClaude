@@ -9,6 +9,11 @@ from aiohttp.client_exceptions import ClientError
 
 from app.clients.base_client import BaseClient
 from app.utils.logger import logger
+from app.chatcompletion.openai_compatible import (
+    OpenAICompletion,
+    OpenAIStreamCompletion, OpenAIStreamChoice,
+    OpenAIStreamDelta, OpenAIChoice,OpenAIMessage
+    )
 
 
 class OpenAICompatibleClient(BaseClient):
@@ -83,17 +88,24 @@ class OpenAICompatibleClient(BaseClient):
 
             # 解析响应
             response = json.loads(response_bytes.decode("utf-8"))
-            message = response["choices"][0].get("message", {})
-            content = message.get("content", "")
-            reasoning_content = message.get("reasoning_content")
+            choices = response["choices"]
+            message = choices[0].get("message", {})
+            content = message.get("content", None)
+            reasoning_content = message.get("reasoning_content", None)
 
             # 使用基类的格式化方法重新格式化响应
-            return self.format_openai_compatible_response(
+            return OpenAICompletion(
                 chat_id,
                 created_time,
                 model,
-                content,
-                reasoning_content
+                choices=[OpenAIChoice(
+                    index= choices.get("index", 0),
+                    finish_reason=choices.get("finish_reason", None),
+                    message=OpenAIMessage(
+                        content=content,
+                        reasoning_content=reasoning_content
+                    )
+                )]
             )
 
         except Exception as e:
@@ -146,16 +158,24 @@ class OpenAICompatibleClient(BaseClient):
                             and "delta" in response["choices"][0]
                         ):
                             delta = response["choices"][0]["delta"]
-                            content = delta.get("content", "")
-                            reasoning_content = delta.get("reasoning_content")
+                            content = delta.get("content", None)
+                            reasoning_content = delta.get("reasoning_content", None)
+                            index = delta.get("index", 0)
+                            finish_reason = delta.get("finish_reason", None)
 
                             # 使用基类的格式化方法重新格式化流式响应
-                            yield self.format_openai_compatible_stream_response(
+                            yield OpenAIStreamCompletion(
                                 chat_id,
                                 created_time,
                                 model,
-                                content,
-                                reasoning_content
+                                choices=[OpenAIStreamChoice(
+                                    delta=OpenAIStreamDelta(
+                                        content=content,
+                                        reasoning_content=reasoning_content
+                                    ),
+                                    index=index,
+                                    finish_reason=finish_reason
+                                )],
                             )
 
         except json.JSONDecodeError as e:

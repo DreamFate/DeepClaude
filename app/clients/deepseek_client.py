@@ -2,11 +2,19 @@
 
 import json
 import time
+
 from typing import AsyncGenerator,Dict,Any,Tuple
-from aiohttp.client_exceptions import ClientError
+
+import aiohttp
 
 from app.utils.logger import logger
-from .base_client import BaseClient
+
+from app.chatcompletion.openai_compatible import (
+    OpenAICompletion,
+    OpenAIStreamCompletion, OpenAIStreamChoice,
+    OpenAIStreamDelta,OpenAIUsage,OpenAIChoice,OpenAIMessage
+    )
+from .base_client import BaseClient,handle_client_errors
 
 
 class DeepSeekClient(BaseClient):
@@ -15,6 +23,7 @@ class DeepSeekClient(BaseClient):
         self,
         api_key: str,
         api_url: str,
+        connector: aiohttp.TCPConnector,
         proxy: str = None,
     ):
         """初始化 DeepSeek 客户端
@@ -22,9 +31,10 @@ class DeepSeekClient(BaseClient):
         Args:
             api_key: DeepSeek API密钥
             api_url: DeepSeek API地址
-            proxy: 代理服务器地址
+            connector: TCP连接器
+            proxy: 代理服务器地址，例如 "http://127.0.0.1:7890"
         """
-        super().__init__(api_key, api_url, proxy=proxy)
+        super().__init__(api_key, api_url, connector=connector, proxy=proxy)
 
     def _format_data(
         self,
@@ -54,6 +64,22 @@ class DeepSeekClient(BaseClient):
         }
         return headers,data
 
+    def parse_json_line(self,line):
+        """解析 JSON 行"""
+        if line.startswith("data: "):
+            json_str = line[len("data: "):]
+            if json_str == "[DONE]":
+                return None
+        else:
+            json_str = line
+
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.error("无法解析JSON: %s", json_str)
+            return None
+
+    @handle_client_errors(operation_name="流式对话")
     async def stream_chat(
         self,
         messages: list,
@@ -79,118 +105,90 @@ class DeepSeekClient(BaseClient):
 
         logger.debug("开始流式对话: ")
 
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-        created_time = int(time.time())
+        is_collecting_think = False
+        temp_content = ""
 
         async for chunk in self._make_request(headers, data):
             chunk_str = chunk.decode("utf-8")
 
-            try:
-                lines = chunk_str.splitlines()
-                for line in lines:
-                    if line.startswith("data: "):
-                        json_str = line[len("data: ") :]
-                        if json_str == "[DONE]":
-                            return
+            lines = chunk_str.splitlines()
+            for line in lines:
+                data = self.parse_json_line(line)
+                if data is None:
+                    continue
 
-                        data = json.loads(json_str)
-                        if (
-                            data
-                            and data.get("choices")
-                            and data["choices"][0].get("delta")
-                        ):
-                            delta = data["choices"][0]["delta"]
+                choices = data.get("choices")
+                delta = choices[0].get("delta")
 
-                            if is_origin_reasoning:
-                                # 处理 reasoning_content
-                                if delta.get("reasoning_content"):
-                                    content = delta["reasoning_content"]
-                                    logger.debug("提取推理内容：%s", content)
-                                    yield self.format_openai_compatible_stream_response(
-                                        chat_id,
-                                        created_time,model,
-                                        content="",
-                                        reasoning_content=content
-                                    )
-                                if delta.get("reasoning_content") is None and delta.get(
-                                    "content"
-                                ):
-                                    content = delta["content"]
-                                    logger.info("提取内容信息，推理阶段结束: %s", content)
-                                    yield self.format_openai_compatible_stream_response(
-                                        chat_id,
-                                        created_time,model,
-                                        content=content
-                                    )
-                            else:
-                                accumulated_content = ""
-                                is_collecting_think = False
-                                # 处理其他模型的输出
-                                content = delta.get("content","")
-                                if content == "":  # 只跳过完全空的字符串
-                                    continue
-                                logger.debug("非原生推理内容：%s", content)
-                                accumulated_content += content
+                if is_origin_reasoning:
+                    yield OpenAIStreamCompletion(
+                        id=choices[0].get("id"),
+                        created=choices[0].get("created"),
+                        model=model,
+                        choices=[OpenAIStreamChoice(
+                            delta=OpenAIStreamDelta(
+                                role=delta.get("role"),
+                                content=delta.get("content"),
+                                reasoning_content=delta.get("reasoning_content")
+                                ),
+                            index=choices[0].get("index"),
+                            finish_reason=choices[0].get("finish_reason")
+                            )
+                        ],
+                        usage=OpenAIUsage(
+                            completion_tokens=choices[0].get("usage").get("completion_tokens"),
+                            prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
+                            total_tokens=choices[0].get("usage").get("total_tokens")
+                        ) if choices[0].get("usage") else None
+                    )
+                else:
+                    original_content = delta.get("content")
 
-                                if "<think>" in content and not is_collecting_think:
-                                    # 开始收集推理内容
-                                    logger.debug("开始收集推理内容")
-                                    is_collecting_think = True
-                                    yield self.format_openai_compatible_stream_response(
-                                        chat_id,
-                                        created_time,
-                                        model,
-                                        content="",
-                                        reasoning_content=content
-                                    )
-                                elif is_collecting_think:
-                                    if "</think>" in content:
-                                        # 推理内容结束
-                                        logger.debug("推理内容结束")
-                                        is_collecting_think = False
-                                        yield self.format_openai_compatible_stream_response(
-                                            chat_id,
-                                            created_time,
-                                            model,
-                                            content="",
-                                            reasoning_content=content
-                                        )
-                                        # 输出空的 content 来触发 Claude 处理
-                                        yield self.format_openai_compatible_stream_response(
-                                            chat_id,
-                                            created_time,
-                                            model,
-                                            content=""
-                                        )
-                                        # 重置累积内容
-                                        accumulated_content = ""
-                                    else:
-                                        # 继续收集推理内容
-                                        yield self.format_openai_compatible_stream_response(
-                                            chat_id,
-                                            created_time,
-                                            model,
-                                            content="",
-                                            reasoning_content=content
-                                        )
-                                else:
-                                    # 普通内容
-                                    yield self.format_openai_compatible_stream_response(
-                                        chat_id,
-                                        created_time,
-                                        model,
-                                        content=content
-                                    )
+                    # 这里为</think>结束,后面可能还有正文的内容,需要将temp_content和original_content拼接
+                    if temp_content:
+                        original_content = temp_content + original_content
+                        temp_content = ""
 
-            except json.JSONDecodeError as e:
-                error_msg = f"JSON 解析错误: {str(e)}"
-                logger.error(error_msg)
-                raise ClientError(error_msg) from e
-            except Exception as e:
-                error_msg = f"Stream chat请求失败: {str(e)}"
-                logger.error(error_msg)
-                raise ClientError(error_msg) from e
+                    if "<think>" in original_content:
+                        is_collecting_think = True
+                        # 这里一般有<think>,将会是第一个开始,就直接替换当作思考链的内容
+                        original_content = original_content.replace("<think>", "", 1)
 
+                    if "</think>" in original_content:
+                        is_collecting_think = False
+                        parts = original_content.split("</think>")
+                        original_content = parts[0]
+                        temp_content = "".join(parts[1:])
+
+                    if is_collecting_think:
+                        delta_data = OpenAIStreamDelta(
+                            role=delta.get("role"),
+                            reasoning_content=original_content
+                        )
+                    else:
+                        delta_data = OpenAIStreamDelta(
+                            role=delta.get("role"),
+                            content=original_content,
+                        )
+
+                    yield OpenAIStreamCompletion(
+                        id=choices[0].get("id"),
+                        created=choices[0].get("created"),
+                        model=model,
+                        choices=[OpenAIStreamChoice(
+                            delta=delta_data,
+                            index=choices[0].get("index"),
+                            finish_reason=choices[0].get("finish_reason")
+                            )
+                        ],
+                        usage=OpenAIUsage(
+                            completion_tokens=choices[0].get("usage").get("completion_tokens"),
+                            prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
+                            total_tokens=choices[0].get("usage").get("total_tokens")
+                        ) if choices[0].get("usage") else None
+                    )
+
+    @handle_client_errors(operation_name="非流式对话")
     async def chat(
         self,
         messages: list,
@@ -213,46 +211,49 @@ class DeepSeekClient(BaseClient):
         headers, data = self._format_data(model, messages,stream=False)
 
         logger.debug("开始非流式对话")
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-        created_time = int(time.time())
 
-        try:
-            # 使用非流式请求方法获取完整响应
-            response_bytes = await self._make_non_streaming_request(headers, data)
-            response = json.loads(response_bytes.decode("utf-8"))
+        # 使用非流式请求方法获取完整响应
+        response_bytes = await self._make_non_streaming_request(headers, data)
+        response = json.loads(response_bytes.decode("utf-8"))
 
-            # 处理响应
-            message = response["choices"][0]["message"]
-            content = message.get("content", "")
-            reasoning_content = None
+        # 处理响应
+        chat_id = response.get("id")
+        created = response.get("created")
+        choices = response.get("choices")
+        message = choices[0].get("message")
+        content = message.get("content")
+        reasoning_content = None
 
-            if is_origin_reasoning:
-                # 处理原生推理内容
-                reasoning_content = message.get("reasoning_content")
-            else:
-                # 处理非原生推理内容
-                if "<think>" in content and "</think>" in content:
-                    # 提取推理内容
-                    think_start = content.find("<think>")
-                    think_end = content.find("</think>") + len("</think>")
-                    reasoning_content = content[think_start:think_end]
-                    # 移除推理内容
-                    content = content[:think_start] + content[think_end:]
+        if is_origin_reasoning:
+            # 处理原生推理内容
+            reasoning_content = message.get("reasoning_content")
+        else:
+            # 处理非原生推理内容
+            if "<think>" in content and "</think>" in content:
+                # 提取推理内容
+                think_start = content.find("<think>")
+                think_end = content.find("</think>") + len("</think>")
+                reasoning_content = content[think_start:think_end]
+                # 移除推理内容
+                content = content[:think_start] + content[think_end:]
 
-            # 返回格式化的OpenAI兼容响应
-            return self.format_openai_compatible_response(
-                chat_id,
-                created_time,
-                model,
-                content,
-                reasoning_content
-            )
-
-        except json.JSONDecodeError as e:
-            error_msg = f"JSON 解析错误: {str(e)}"
-            logger.error(error_msg)
-            raise ClientError(error_msg) from e
-        except Exception as e:
-            error_msg = f"Chat请求失败: {str(e)}"
-            logger.error(error_msg)
-            raise ClientError(error_msg) from e
+        # 返回格式化的OpenAI兼容响应
+        return OpenAICompletion(
+            chat_id,
+            created,
+            model,
+            choices=[OpenAIChoice(
+                message=OpenAIMessage(
+                    role=message.get("role"),
+                    content=content,
+                    reasoning_content=reasoning_content
+                ),
+                index=choices[0].get("index"),
+                finish_reason=choices[0].get("finish_reason")
+            )],
+            usage=OpenAIUsage(
+                completion_tokens=choices[0].get("usage").get("completion_tokens"),
+                prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
+                total_tokens=choices[0].get("usage").get("total_tokens")
+            ) if choices[0].get("usage") else None
+        )
