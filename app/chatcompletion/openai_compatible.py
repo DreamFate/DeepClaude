@@ -34,6 +34,7 @@ class OpenAIMessage:
     content: Optional[str] = None
     role: Optional[str] = None
     reasoning_content: Optional[str] = None
+    type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典，忽略None值"""
@@ -107,6 +108,8 @@ class OpenAIStreamCompletion:
     created: int = field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[OpenAIStreamChoice] = field(default_factory=list)
+    # 这里为供应商拿回来的chat_id
+    provider_chat_id: Optional[str] = None
     usage: Optional[OpenAIUsage] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -127,6 +130,8 @@ class OpenAICompletion:
     created: int = field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[OpenAIChoice] = field(default_factory=list)
+    # 这里为供应商拿回来的chat_id
+    provider_chat_id: Optional[str] = None
     usage: Optional[OpenAIUsage] = None
 
     def to_dict(self) -> Dict[str, Any]:

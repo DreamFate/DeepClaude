@@ -207,6 +207,7 @@ class BaseClient(ABC):
 
             raise
 
+    @handle_client_errors(operation_name="原始非流式对话")
     async def original_chat(
         self,
         headers: Dict[str, Any],
@@ -223,17 +224,14 @@ class BaseClient(ABC):
         """
         logger.debug("开始原始非流式对话: ")
         # 使用非流式请求方法获取完整响应
-        try:
-            response_bytes = await self._make_non_streaming_request(headers, data)
+        response_bytes = await self._make_non_streaming_request(headers, data)
 
-            # 解析响应
-            response = json.loads(response_bytes.decode("utf-8"))
+        # 解析响应
+        response = json.loads(response_bytes.decode("utf-8"))
 
-            return response
-        except Exception as e:
-            logger.error("原始非流式对话时出错: %s", e)
-            raise ValueError("原始非流式对话时出错") from e
+        return response
 
+    @handle_client_errors(operation_name="原始流式对话")
     async def original_stream_chat(
         self,
         headers: Dict[str, Any],
@@ -251,17 +249,12 @@ class BaseClient(ABC):
                 内容: 实际的文本内容
         """
 
-        try:
-            async for chunk in self._make_request(headers, data):
-                chunk_str = chunk.decode("utf-8")
-                if not chunk_str.strip():
-                    continue
+        async for chunk in self._make_request(headers, data):
+            chunk_str = chunk.decode("utf-8")
+            if not chunk_str.strip():
+                continue
 
-                yield chunk_str
-        except Exception as e:
-            # 致命错误，记录并抛出
-            logger.error("原生流式对话过程中发生错误: %s", e)
-            raise ValueError(f"原生流式对话过程中发生错误: {e}") from e
+            yield chunk_str
 
 
     @abstractmethod

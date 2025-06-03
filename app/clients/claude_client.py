@@ -3,13 +3,14 @@
 import json
 from typing import AsyncGenerator, Dict, Any, Tuple
 import time
+import aiohttp
 
 from app.utils.logger import logger
 
 from app.chatcompletion.openai_compatible import (
     OpenAICompletion, OpenAIChoice, OpenAIMessage,
     OpenAIStreamCompletion, OpenAIStreamChoice,
-    OpenAIStreamDelta
+    OpenAIStreamDelta,OpenAIUsage
     )
 from .base_client import BaseClient
 
@@ -20,6 +21,7 @@ class ClaudeClient(BaseClient):
         self,
         api_key: str,
         api_url: str,
+        connector: aiohttp.TCPConnector,
         provider: str = "anthropic",
         proxy: str = None,
     ):
@@ -28,10 +30,11 @@ class ClaudeClient(BaseClient):
         Args:
             api_key: Claude API密钥
             api_url: Claude API地址
+            connector: TCP连接器
             provider: API提供商，支持 anthropic、openrouter、oneapi
             proxy: 代理服务器地址
         """
-        super().__init__(api_key, api_url, proxy=proxy)
+        super().__init__(api_key, api_url, connector=connector, proxy=proxy)
         self.provider = provider
 
 
@@ -172,38 +175,47 @@ class ClaudeClient(BaseClient):
         headers, data = self.data_format(messages, model_arg, model, system_prompt, stream)
         logger.debug("开始对话: ")
         # 使用非流式请求方法获取完整响应
+        response_bytes = await self._make_non_streaming_request(headers, data)
+
+        # 解析响应
+        response = json.loads(response_bytes.decode("utf-8"))
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created = int(time.time())
+        content = response.get("content", "")
+
+        return OpenAICompletion(
+            chat_id,
+            created,
+            model,
+            provider_chat_id=response.get("id"),
+            choices=[OpenAIChoice(
+                message=OpenAIMessage(
+                    role=response.get("role"),
+                    content=content[0].get("text"),
+                    reasoning_content=content[0].get("thinking")
+                ),
+                finish_reason=response.get("stop_reason")
+            )],
+            usage=OpenAIUsage(
+                completion_tokens=response.get("usage").get("output_tokens"),
+                prompt_tokens=response.get("usage").get("input_tokens")
+            ) if response.get("usage") else None
+        )
+
+    def parse_json_line(self,line):
+        """解析 JSON 行"""
+        if line.startswith("data: "):
+            json_str = line[len("data: "):]
+            if json_str == "[DONE]":
+                return None
+        else:
+            json_str = line
+
         try:
-            chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-            created_time = int(time.time())
-            response_bytes = await self._make_non_streaming_request(headers, data)
-
-            # 解析响应
-            response = json.loads(response_bytes.decode("utf-8"))
-
-            if self.provider in ("openrouter", "oneapi"):
-                content =  response.get("choices", [{}])[0].get("message", {}).get("content", "")
-            elif self.provider == "anthropic":
-                content = response.get("content", [{}])[0].get("text", "")
-            else:
-                return response
-
-            if not content:
-                logger.debug("%s响应中未找到有效内容", self.provider)
-                content = ""
-
-            return OpenAICompletion(
-                id=chat_id,
-                model=model,
-                choices=[OpenAIChoice(message=OpenAIMessage(content=content))],
-                created=created_time,
-            )
-
-        except (KeyError, IndexError) as e:
-            logger.error("解析%s响应时出错: %s", self.provider, e)
-            return response
-        except Exception as e:
-            logger.error("%s对话时出错: %s", self.provider, e)
-            raise ValueError(f"{self.provider}对话出错") from e
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.error("无法解析JSON: %s", json_str)
+            return None
 
     async def stream_chat(
         self,
@@ -230,49 +242,52 @@ class ClaudeClient(BaseClient):
         headers, data = self.data_format(messages, model_arg, model, system_prompt, stream)
 
         logger.debug("开始对话: ")
+
         chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-        created_time = int(time.time())
+        created = int(time.time())
+        provider_chat_id = None
+        role = None
         async for chunk in self._make_request(headers, data):
             chunk_str = chunk.decode("utf-8")
-            if not chunk_str.strip():
-                continue
+            lines = chunk_str.splitlines()
 
-            for line in chunk_str.split("\n"):
-                if line.startswith("data: "):
-                    json_str = line[6:]  # 去掉 'data: ' 前缀
-                    if json_str.strip() == "[DONE]":
-                        return
+            for line in lines:
+                data = self.parse_json_line(line)
+                if data is None:
+                    continue
 
-                    try:
-                        data = json.loads(json_str)
-                        content = ""
-                        if self.provider in ("openrouter", "oneapi"):
-                            # OpenRouter/OneApi 格式
-                            content = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                            if not content:
-                                logger.error("OpenRouter/OneApi 格式错误: %s", data)
-                                yield data
-                        elif self.provider == "anthropic":
-                            # Anthropic 格式
-                            if data.get("type") == "content_block_delta":
-                                content = data.get("delta", {}).get("text", "")
-                            else:
-                                logger.error("Anthropic 格式错误: %s", data)
-                                yield data
-                        else:
-                            yield data
-                        if not content:
-                            logger.debug("%s响应中未找到有效内容", self.provider)
+                chat_type = data.get("type")
+                if chat_type == "message_start":
+                    messages = data.get("messages")
+                    provider_chat_id = messages[0].get("id")
+                    role = messages[0].get("role")
 
-                        yield OpenAIStreamCompletion(
-                            id=chat_id,
-                            model=model,
-                            choices=[OpenAIStreamChoice(delta=OpenAIStreamDelta(content=content))],
-                            created=created_time,
-                        )
-                    except (KeyError, IndexError) as e:
-                        logger.error("解析%s响应时出错: %s", self.provider, e)
-                        yield data
-                    except Exception as e:
-                        logger.error("%s对话时出错: %s", self.provider, e)
-                        raise ValueError(f"{self.provider}对话出错") from e
+                delta = data.get("delta")
+                # 这里跳过一些start和ping相关的数据,现阶段不去获取,用不上
+                if delta is None:
+                    continue
+
+                # 这里跳过使用tool_use工具生成的内容,现阶段不去获取,用不上
+                if delta.get("type") == "input_json_delta":
+                    continue
+
+                yield OpenAIStreamCompletion(
+                        id=chat_id,
+                        created=created,
+                        model=model,
+                        provider_chat_id=provider_chat_id,
+                        choices=[OpenAIStreamChoice(
+                            delta=OpenAIStreamDelta(
+                                role=role,
+                                content=delta.get("text"),
+                                reasoning_content=delta.get("thinking")
+                                ),
+                            index=data.get("index"),
+                            finish_reason=delta.get("stop_reason")
+                            )
+                        ],
+                        usage=OpenAIUsage(
+                            completion_tokens=data.get("usage").get("output_tokens"),
+                            prompt_tokens=data.get("usage").get("input_tokens")
+                        ) if data.get("usage") else None
+                    )

@@ -2,7 +2,6 @@
 
 import json
 import time
-
 from typing import AsyncGenerator,Dict,Any,Tuple
 
 import aiohttp
@@ -105,6 +104,9 @@ class DeepSeekClient(BaseClient):
 
         logger.debug("开始流式对话: ")
 
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created_time = int(time.time())
+
         is_collecting_think = False
         temp_content = ""
 
@@ -122,9 +124,10 @@ class DeepSeekClient(BaseClient):
 
                 if is_origin_reasoning:
                     yield OpenAIStreamCompletion(
-                        id=choices[0].get("id"),
-                        created=choices[0].get("created"),
+                        id=chat_id,
+                        created=created_time,
                         model=model,
+                        provider_chat_id=choices[0].get("id"),
                         choices=[OpenAIStreamChoice(
                             delta=OpenAIStreamDelta(
                                 role=delta.get("role"),
@@ -172,9 +175,10 @@ class DeepSeekClient(BaseClient):
                         )
 
                     yield OpenAIStreamCompletion(
-                        id=choices[0].get("id"),
-                        created=choices[0].get("created"),
+                        id=chat_id,
+                        created=created_time,
                         model=model,
+                        provider_chat_id=choices[0].get("id"),
                         choices=[OpenAIStreamChoice(
                             delta=delta_data,
                             index=choices[0].get("index"),
@@ -217,12 +221,16 @@ class DeepSeekClient(BaseClient):
         response = json.loads(response_bytes.decode("utf-8"))
 
         # 处理响应
-        chat_id = response.get("id")
-        created = response.get("created")
+        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        created = int(time.time())
+        provider_chat_id = response.get("id")
         choices = response.get("choices")
         message = choices[0].get("message")
         content = message.get("content")
         reasoning_content = None
+
+        if not content:
+            logger.debug("DeepSeek响应中未找到有效内容")
 
         if is_origin_reasoning:
             # 处理原生推理内容
@@ -242,6 +250,7 @@ class DeepSeekClient(BaseClient):
             chat_id,
             created,
             model,
+            provider_chat_id=provider_chat_id,
             choices=[OpenAIChoice(
                 message=OpenAIMessage(
                     role=message.get("role"),
