@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional, Dict, Any, List, Tuple, Callable
 import json
 import functools
+import asyncio
 
 import aiohttp
 
@@ -72,7 +73,7 @@ class BaseClient(ABC):
         self.api_url = api_url
         self.timeout = timeout or self.DEFAULT_TIMEOUT
         self.proxy = proxy
-        self.connector = connector
+        self.connector = connector or aiohttp.TCPConnector()
 
     def _get_proxy_url(self) -> Optional[str]:
         """获取格式化的代理URL
@@ -101,12 +102,24 @@ class BaseClient(ABC):
 
         return data
 
+    def parse_json_line(self, line):
+        """解析 JSON 行"""
+        if line.startswith("data: "):
+            json_str = line[len("data: "):]
+            if json_str == "[DONE]":
+                return None
+        else:
+            json_str = line
+
+        return json.loads(json_str)
+
     @handle_client_errors(operation_name="流式请求服务器")
     async def _make_request(
         self,
         headers: Dict[str, str],
         data: Dict[str, Any],
         buffer_size: int = 8192,
+        cancel_flag: Optional[asyncio.Event] = None
     ) -> AsyncGenerator[bytes, None]:
         """发送请求并处理响应
 
@@ -114,6 +127,7 @@ class BaseClient(ABC):
             headers: 请求头
             data: 请求数据
             buffer_size: 读取缓冲区大小，默认8KB
+            cancel_flag: 取消标志，用于取消请求
 
         Yields:
             bytes: 原始响应数据
@@ -126,35 +140,29 @@ class BaseClient(ABC):
         """
         proxy_url = self._get_proxy_url()
 
-        try:
-            async with aiohttp.ClientSession(connector=self.connector) as session:
-                async with session.post(
-                    self.api_url,
-                    headers=headers,
-                    json=data,
-                    timeout=self.timeout,
-                    proxy=proxy_url
-                ) as response:
-                    # 检查响应状态
-                    if not response.ok:
-                        error_text = await response.text()
-                        error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
-                        logger.error(error_msg)
-                        raise ClientError(error_msg)
+        async with aiohttp.ClientSession(connector=self.connector) as session:
+            async with session.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=self.timeout,
+                proxy=proxy_url
+            ) as response:
+                # 检查响应状态
+                if not response.ok:
+                    error_text = await response.text()
+                    error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
+                    logger.error(error_msg)
+                    raise ClientError(error_msg)
 
-                    # 流式读取响应内容
-                    async for chunk in response.content.iter_chunked(buffer_size):
-                        if chunk:  # 过滤空chunks
-                            yield chunk
-
-        except Exception as e:
-            # 统一异常处理
-            error_type = "请求超时" if isinstance(e, ServerTimeoutError) else \
-                         "客户端错误" if isinstance(e, ClientError) else \
-                         "请求处理异常"
-            error_msg = f"{error_type}: {str(e)}"
-            logger.error(error_msg)
-            raise
+                # 流式读取响应内容
+                async for chunk in response.content.iter_chunked(buffer_size):
+                    if cancel_flag and cancel_flag.is_set():
+                        logger.debug("请求被用户取消，正在关闭连接")
+                        response.release()
+                        break
+                    if chunk:  # 过滤空chunks
+                        yield chunk
 
     @handle_client_errors(operation_name="非流式请求")
     async def _make_non_streaming_request(
@@ -178,55 +186,42 @@ class BaseClient(ABC):
         """
         proxy_url = self._get_proxy_url()
 
-        try:
-            async with aiohttp.ClientSession(connector=self.connector) as session:
-                async with session.post(
-                    self.api_url,
-                    headers=headers,
-                    json=data,
-                    timeout=self.timeout,
-                    proxy=proxy_url
-                ) as response:
-                    # 检查响应状态
-                    if not response.ok:
-                        error_text = await response.text()
-                        error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
-                        logger.error(error_msg)
-                        raise ClientError(error_msg)
+        async with aiohttp.ClientSession(connector=self.connector) as session:
+            async with session.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=self.timeout,
+                proxy=proxy_url
+            ) as response:
+                # 检查响应状态
+                if not response.ok:
+                    error_text = await response.text()
+                    error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
+                    logger.error(error_msg)
+                    raise ClientError(error_msg)
 
-                    # 读取完整响应内容
-                    return await response.read()
-
-        except Exception as e:
-            # 统一异常处理
-            error_type = "请求超时" if isinstance(e, ServerTimeoutError) else \
-                         "客户端错误" if isinstance(e, ClientError) else \
-                         "请求处理异常"
-            error_msg = f"{error_type}: {str(e)}"
-            logger.error(error_msg)
-
-            raise
+                # 读取完整响应内容
+                return await response.read()
 
     @handle_client_errors(operation_name="原始非流式对话")
     async def original_chat(
         self,
-        headers: Dict[str, Any],
-        data: Dict[str, Any],
+        headers: Dict[str, str],
+        data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """原始非流式对话
 
         Args:
             headers: 请求头
-            data: 请求数据
+            data: 请求体
 
         Returns:
-            Dict[str, Any]: OpenAI 格式的完整响应
+            Dict[str, Any]: 完整响应
         """
-        logger.debug("开始原始非流式对话: ")
-        # 使用非流式请求方法获取完整响应
+
         response_bytes = await self._make_non_streaming_request(headers, data)
 
-        # 解析响应
         response = json.loads(response_bytes.decode("utf-8"))
 
         return response
@@ -234,39 +229,59 @@ class BaseClient(ABC):
     @handle_client_errors(operation_name="原始流式对话")
     async def original_stream_chat(
         self,
-        headers: Dict[str, Any],
+        headers: Dict[str, str],
         data: Dict[str, Any],
+        cancel_flag: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """原始流式对话
 
         Args:
             headers: 请求头
-            data: 请求数据
+            data: 请求体
+            cancel_flag: 取消标志，用于取消请求
 
         Yields:
             tuple[str, str]: (内容类型, 内容)
-                内容类型: "answer"
-                内容: 实际的文本内容
         """
-
-        async for chunk in self._make_request(headers, data):
+        async for chunk in self._make_request(headers, data,cancel_flag=cancel_flag):
             chunk_str = chunk.decode("utf-8")
             if not chunk_str.strip():
                 continue
 
             yield chunk_str
 
+    @abstractmethod
+    def format_data(
+        self,
+        api_key: str,
+        model: str,
+        messages: List[Dict[str, str]],
+        model_arg: Dict[str, Any],
+        stream: bool,
+        other_params: Dict[str, Any] = None,
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        """格式化数据"""
+
 
     @abstractmethod
     async def stream_chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
+        self,
+        chat_id: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        model_arg: Dict[str, Any],
+        other_params: Dict[str, Any] = None,
+        cancel_flag: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Tuple[str, str], None]:
         """流式对话，由子类实现
 
         Args:
+            chat_id: 对话ID
             messages: 消息列表
             model: 模型名称
             model_arg: 模型参数
+            other_params: 其他参数
+            cancel_flag: 取消标志，用于取消请求
 
         Yields:
             tuple[str, str]: (内容类型, 内容)
@@ -274,14 +289,21 @@ class BaseClient(ABC):
 
     @abstractmethod
     async def chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
+        self,
+        chat_id: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        model_arg: Dict[str, Any],
+        other_params: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """非流式对话，由子类实现
 
         Args:
+            chat_id: 对话ID
             messages: 消息列表
             model: 模型名称
             model_arg: 模型参数
+            other_params: 其他参数
 
         Returns:
             Dict[str, Any]: 完整的响应数据

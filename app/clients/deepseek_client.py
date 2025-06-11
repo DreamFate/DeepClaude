@@ -2,8 +2,9 @@
 
 import json
 import time
-from typing import AsyncGenerator,Dict,Any,Tuple
+from typing import AsyncGenerator,Dict,Any,Optional,Tuple,List
 
+import asyncio
 import aiohttp
 
 from app.utils.logger import logger
@@ -13,8 +14,8 @@ from app.chatcompletion.openai_compatible import (
     OpenAIStreamCompletion, OpenAIStreamChoice,
     OpenAIStreamDelta,OpenAIUsage,OpenAIChoice,OpenAIMessage
     )
+from app.chatcompletion.request_deepseek import format_deepseek_request
 from .base_client import BaseClient,handle_client_errors
-
 
 class DeepSeekClient(BaseClient):
     """DeepSeek API 客户端"""
@@ -23,7 +24,7 @@ class DeepSeekClient(BaseClient):
         api_key: str,
         api_url: str,
         connector: aiohttp.TCPConnector,
-        proxy: str = None,
+        proxy: Optional[str] = None,
     ):
         """初始化 DeepSeek 客户端
 
@@ -33,58 +34,28 @@ class DeepSeekClient(BaseClient):
             connector: TCP连接器
             proxy: 代理服务器地址，例如 "http://127.0.0.1:7890"
         """
-        super().__init__(api_key, api_url, connector=connector, proxy=proxy)
+        super().__init__(api_key, api_url, connector, proxy=proxy)
 
-    def _format_data(
+    def format_data(
         self,
-        model:str,
-        messages:str,
-        stream:bool = True
+        api_key: str,
+        model: str,
+        messages: List[Dict[str, str]],
+        model_arg: Dict[str, Any],
+        stream: bool,
+        other_params: Dict[str, Any] = None
     ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        """将数据格式化为 DeepSeek API 可以接受的格式
+        return format_deepseek_request(api_key, model, messages, model_arg, stream)
 
-        Args:
-            model: 模型名称
-            messages: 消息列表
-
-        Returns:
-            headers: 请求头
-            data: 请求体
-        """
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        data = {
-            "model": model,
-            "messages": messages,
-            "stream": stream
-        }
-        return headers,data
-
-    def parse_json_line(self,line):
-        """解析 JSON 行"""
-        if line.startswith("data: "):
-            json_str = line[len("data: "):]
-            if json_str == "[DONE]":
-                return None
-        else:
-            json_str = line
-
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            logger.error("无法解析JSON: %s", json_str)
-            return None
-
-    @handle_client_errors(operation_name="流式对话")
+    @handle_client_errors("deepseek流式对话")
     async def stream_chat(
         self,
+        chat_id: str,
         messages: list,
         model: str,
-        model_arg: Dict[str, Any] = None,
-        is_origin_reasoning: bool = True,
+        model_arg: Dict[str, Any],
+        other_params: Dict[str, Any] = None,
+        cancel_flag: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """流式对话
 
@@ -92,7 +63,7 @@ class DeepSeekClient(BaseClient):
             messages: 消息列表
             model: 模型名称
             model_arg: 模型参数元组[temperature, top_p, presence_penalty, frequency_penalty]
-            is_origin_reasoning: 是否使用原生推理，默认为 True
+            other_params: 其他参数
 
         Yields:
             tuple[str, str]: (内容类型, 内容)
@@ -100,17 +71,17 @@ class DeepSeekClient(BaseClient):
                 内容: 实际的文本内容
         """
 
-        headers, data = self._format_data(model,messages,stream=True)
+        is_origin_reasoning = other_params.get("is_origin_reasoning", True)
+        headers,data = self.format_data(self.api_key,model,messages,model_arg,stream=True)
 
         logger.debug("开始流式对话: ")
 
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-        created_time = int(time.time())
+        created = int(time.time())
 
         is_collecting_think = False
         temp_content = ""
 
-        async for chunk in self._make_request(headers, data):
+        async for chunk in self._make_request(headers, data,cancel_flag=cancel_flag):
             chunk_str = chunk.decode("utf-8")
 
             lines = chunk_str.splitlines()
@@ -125,9 +96,9 @@ class DeepSeekClient(BaseClient):
                 if is_origin_reasoning:
                     yield OpenAIStreamCompletion(
                         id=chat_id,
-                        created=created_time,
+                        created=created,
                         model=model,
-                        provider_chat_id=choices[0].get("id"),
+                        provider_chat_id=data.get("id"),
                         choices=[OpenAIStreamChoice(
                             delta=OpenAIStreamDelta(
                                 role=delta.get("role"),
@@ -139,10 +110,10 @@ class DeepSeekClient(BaseClient):
                             )
                         ],
                         usage=OpenAIUsage(
-                            completion_tokens=choices[0].get("usage").get("completion_tokens"),
-                            prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
-                            total_tokens=choices[0].get("usage").get("total_tokens")
-                        ) if choices[0].get("usage") else None
+                            completion_tokens=data.get("usage").get("completion_tokens"),
+                            prompt_tokens=data.get("usage").get("prompt_tokens"),
+                            total_tokens=data.get("usage").get("total_tokens")
+                        ) if data.get("usage") else None
                     )
                 else:
                     original_content = delta.get("content")
@@ -176,7 +147,7 @@ class DeepSeekClient(BaseClient):
 
                     yield OpenAIStreamCompletion(
                         id=chat_id,
-                        created=created_time,
+                        created=created,
                         model=model,
                         provider_chat_id=choices[0].get("id"),
                         choices=[OpenAIStreamChoice(
@@ -186,19 +157,20 @@ class DeepSeekClient(BaseClient):
                             )
                         ],
                         usage=OpenAIUsage(
-                            completion_tokens=choices[0].get("usage").get("completion_tokens"),
-                            prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
-                            total_tokens=choices[0].get("usage").get("total_tokens")
-                        ) if choices[0].get("usage") else None
+                            completion_tokens=data.get("usage").get("completion_tokens"),
+                            prompt_tokens=data.get("usage").get("prompt_tokens"),
+                            total_tokens=data.get("usage").get("total_tokens")
+                        ) if data.get("usage") else None
                     )
 
-    @handle_client_errors(operation_name="非流式对话")
+    @handle_client_errors("deepseek非流式对话")
     async def chat(
         self,
+        chat_id: str,
         messages: list,
         model: str,
         model_arg: Dict[str, Any] = None,
-        is_origin_reasoning: bool = True,
+        other_params: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """非流式对话
 
@@ -206,13 +178,14 @@ class DeepSeekClient(BaseClient):
             messages: 消息列表
             model: 模型名称
             model_arg: 模型参数元组[temperature, top_p, presence_penalty, frequency_penalty]
-            is_origin_reasoning: 是否使用原生推理，默认为 True
+            other_params: 其他参数
 
         Returns:
             Dict[str, Any]: OpenAI 兼容格式的完整响应
         """
+        is_origin_reasoning = other_params.get("is_origin_reasoning", True)
         # 准备请求数据
-        headers, data = self._format_data(model, messages,stream=False)
+        headers, data = self.format_data(self.api_key,model,messages,model_arg,stream=False)
 
         logger.debug("开始非流式对话")
 
@@ -221,7 +194,6 @@ class DeepSeekClient(BaseClient):
         response = json.loads(response_bytes.decode("utf-8"))
 
         # 处理响应
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
         created = int(time.time())
         provider_chat_id = response.get("id")
         choices = response.get("choices")
@@ -261,8 +233,8 @@ class DeepSeekClient(BaseClient):
                 finish_reason=choices[0].get("finish_reason")
             )],
             usage=OpenAIUsage(
-                completion_tokens=choices[0].get("usage").get("completion_tokens"),
-                prompt_tokens=choices[0].get("usage").get("prompt_tokens"),
-                total_tokens=choices[0].get("usage").get("total_tokens")
-            ) if choices[0].get("usage") else None
+                completion_tokens=response.get("usage").get("completion_tokens"),
+                prompt_tokens=response.get("usage").get("prompt_tokens"),
+                total_tokens=response.get("usage").get("total_tokens")
+            ) if response.get("usage") else None
         )

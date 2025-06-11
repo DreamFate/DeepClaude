@@ -18,11 +18,14 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from aiohttp.client_exceptions import ClientError
 
 from app.utils.auth import verify_api_key
 from app.utils.logger import logger
 from app.manager.model_manager import ModelManager
-from app.utils.db_manager_pool import DBManagerPool
+from app.db.db_manager import DBManager
+
 
 
 # 版本信息
@@ -45,7 +48,7 @@ async def lifespan(app_instance: FastAPI):
         None: 控制权交还给FastAPI服务器
     """
     # 初始化数据库连接池
-    db_manager = DBManagerPool()
+    db_manager = DBManager()
     db_manager.open_db_manager()
     logger.info("数据库连接池初始化完成")
     app_instance.state.model_manager = ModelManager(db_manager)
@@ -112,10 +115,79 @@ async def chat_completions(request: Request):
         # 获取请求体
         body = await request.json()
         # 使用 ModelManager 处理请求，ModelManager 将处理不同的模型组合
-        return await app.state.model_manager.process_request(body)
+        response = await app.state.model_manager.process_request(body)
+        return response
+    except ClientError as e:
+        # 处理已知的客户端错误
+
+        error_message = str(e)
+        error_code = e.status_code if hasattr(e, 'status_code') else 500
+        error_type = e.error_type if hasattr(e, 'error_type') else "其他错误"
+        error_info={
+            "error": {
+                "message": error_message,
+                "type": error_type,
+                "code": error_code
+            }
+        }
+
+        # 处理常见的错误信息
+        if "Input length" in error_message:
+            error_info["message_details"] = "输入的上下文内容过长，超过了模型的最大处理长度限制。请减少输入内容或分段处理。"
+        elif "InvalidParameter" in error_message:
+            error_info["message_details"] = "请求参数无效，请检查输入内容。"
+        elif "BadRequest" in error_message:
+            error_info["message_details"] = "请求格式错误，请检查输入内容。"
+
+        logger.error("客户端错误: %s - %s", error_type, str(e))
+        return JSONResponse(
+            status_code=error_code,
+            content={
+                "error": {
+                    "message": error_info,
+                    "type": error_type,
+                    "code": error_code
+                }
+            }
+        )
     except Exception as e:
-        logger.error("处理请求时发生错误: %s", e)
-        return {"error": str(e)}
+        # 处理未预期的错误
+        logger.error("处理请求时发生未预期错误: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "其他错误",
+                    "code": 500
+                }
+            }
+        )
+
+@app.post("/v1/cancel", dependencies=[Depends(get_api_key_dependency())])
+async def cancel_request(request: Request):
+    """取消正在进行的请求
+
+    请求体应包含：
+    - request_id: 要取消的请求ID
+    """
+    try:
+        body = await request.json()
+        chat_id = body.get("chat_id")
+
+        if not chat_id:
+            return {"status": "error", "message": "缺少请求chat_id"}
+
+        success = app.state.model_manager.cancel_request(chat_id)
+
+        if success:
+            return {"status": "success", "message": f"请求 {chat_id} 已取消"}
+        else:
+            return {"status": "error", "message": f"未找到请求 {chat_id} 或已完成"}
+    except Exception as e:
+        logger.error("取消请求时发生错误: %s", e)
+        return {"status": "error", "message": str(e)}
+
 
 @app.get("/v1/models", dependencies=[Depends(get_api_key_dependency())])
 async def list_models():

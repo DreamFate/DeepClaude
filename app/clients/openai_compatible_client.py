@@ -4,15 +4,14 @@ import json
 import time
 from typing import AsyncGenerator, Optional, Dict, Any, List,Tuple
 
+import asyncio
 import aiohttp
-from aiohttp.client_exceptions import ClientError
 
-from app.clients.base_client import BaseClient
-from app.utils.logger import logger
+from app.clients.base_client import BaseClient,handle_client_errors
 from app.chatcompletion.openai_compatible import (
     OpenAICompletion,
     OpenAIStreamCompletion, OpenAIStreamChoice,
-    OpenAIStreamDelta, OpenAIChoice,OpenAIMessage
+    OpenAIStreamDelta, OpenAIChoice,OpenAIMessage,OpenAIUsage
     )
 
 
@@ -26,8 +25,9 @@ class OpenAICompatibleClient(BaseClient):
         self,
         api_key: str,
         api_url: str,
+        connector: aiohttp.TCPConnector,
         timeout: Optional[aiohttp.ClientTimeout] = None,
-        proxy: str = None,
+        proxy: Optional[str] = None,
     ):
         """初始化 OpenAI 兼容客户端
 
@@ -37,9 +37,17 @@ class OpenAICompatibleClient(BaseClient):
             timeout: 请求超时设置,None则使用默认值
             proxy: 代理服务器地址
         """
-        super().__init__(api_key, api_url, timeout, proxy=proxy)
+        super().__init__(api_key, api_url, connector=connector, timeout=timeout, proxy=proxy)
 
-    def _format_data(self,model:str,messages:str,stream:bool = True) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    def format_data(
+        self,
+        api_key: str,
+        model: str,
+        messages: List[Dict[str, str]],
+        model_arg: Dict[str, Any],
+        stream: bool,
+        other_params: Dict[str, Any] = None,
+    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
         """将数据格式化为 OpenAI API 可以接受的格式
 
         Args:
@@ -53,24 +61,34 @@ class OpenAICompatibleClient(BaseClient):
         """
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         data = {
             "model": model,
             "messages": messages,
-            "stream": stream
+            "stream": stream,
         }
+        data = self._add_model_params(data, model_arg)
         return headers,data
 
+    @handle_client_errors("OpenAI兼容非流式对话")
     async def chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
+        self,
+        chat_id: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        model_arg: Dict[str, Any] = None,
+        other_params: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """非流式对话
 
         Args:
             messages: 消息列表
             model: 模型名称
+            model_arg: 模型参数元组[temperature, top_p, presence_penalty, frequency_penalty]
+            other_params: 其他参数
+            cancel_flag: 取消标志
 
         Returns:
             Dict[str, Any]: OpenAI 格式的完整响应
@@ -78,50 +96,59 @@ class OpenAICompatibleClient(BaseClient):
         Raises:
             ClientError: 请求错误
         """
-        headers,data = self._format_data(model,messages,stream=False)
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
+        headers,data = self.format_data(self.api_key, model,messages,model_arg,stream=False)
         created_time = int(time.time())
 
         data = self._add_model_params(data, model_arg)
-        try:
-            response_bytes = await self._make_non_streaming_request(headers, data)
 
-            # 解析响应
-            response = json.loads(response_bytes.decode("utf-8"))
-            choices = response["choices"]
-            message = choices[0].get("message", {})
-            content = message.get("content", None)
-            reasoning_content = message.get("reasoning_content", None)
+        response_bytes = await self._make_non_streaming_request(headers, data)
 
-            # 使用基类的格式化方法重新格式化响应
-            return OpenAICompletion(
-                chat_id,
-                created_time,
-                model,
-                choices=[OpenAIChoice(
-                    index= choices.get("index", 0),
-                    finish_reason=choices.get("finish_reason", None),
-                    message=OpenAIMessage(
-                        content=content,
-                        reasoning_content=reasoning_content
-                    )
-                )]
-            )
+        # 解析响应
+        response = json.loads(response_bytes.decode("utf-8"))
+        choices = response["choices"]
+        message = choices[0].get("message", {})
+        content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
 
-        except Exception as e:
-            error_msg = f"Chat请求失败: {str(e)}"
-            logger.error(error_msg)
-            raise ClientError(error_msg) from e
+        # 使用基类的格式化方法重新格式化响应
+        return OpenAICompletion(
+            chat_id,
+            created_time,
+            model,
+            provider_chat_id=response.get("id"),
+            choices=[OpenAIChoice(
+                index= choices.get("index"),
+                finish_reason=choices.get("finish_reason"),
+                message=OpenAIMessage(
+                    content=content,
+                    reasoning_content=reasoning_content
+                )
+            )],
+            usage=OpenAIUsage(
+                completion_tokens=response.get("usage").get("completion_tokens"),
+                prompt_tokens=response.get("usage").get("prompt_tokens"),
+                total_tokens=response.get("usage").get("total_tokens")
+            ) if response.get("usage") else None
+        )
 
+    @handle_client_errors("OpenAI兼容流式对话")
     async def stream_chat(
-        self, messages: List[Dict[str, str]], model: str, model_arg: Dict[str, Any] = None
+        self,
+        chat_id: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        model_arg: Dict[str, Any] = None,
+        other_params: Dict[str, Any] = None,
+        cancel_flag: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式对话
 
         Args:
             messages: 消息列表
             model: 模型名称
-            model_arg: 模型参数
+            model_arg: 模型参数元组[temperature, top_p, presence_penalty, frequency_penalty]
+            other_params: 其他参数
+            cancel_flag: 取消标志
 
         Yields:
             Dict[str, Any]: OpenAI 兼容格式的流式响应
@@ -129,60 +156,40 @@ class OpenAICompatibleClient(BaseClient):
         Raises:
             ClientError: 请求错误
         """
-        headers, data = self._format_data(model, messages, stream=True)
+        headers, data = self.format_data(self.api_key, model, messages,model_arg, stream=True)
         data = self._add_model_params(data, model_arg)
-        chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
-        created_time = int(time.time())
+        created = int(time.time())
 
-        buffer = ""
-        try:
-            async for chunk in self._make_request(headers, data):
-                buffer += chunk.decode("utf-8")
+        async for chunk in self._make_request(headers, data, cancel_flag=cancel_flag):
+            chunk_str = chunk.decode("utf-8")
 
-                # 处理 buffer 中的数据行
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
+            lines = chunk_str.splitlines()
+            for line in lines:
+                data = self.parse_json_line(line)
+                if data is None:
+                    continue
 
-                    # 跳过空行和 data: [DONE] 行
-                    if not line or line == "data: [DONE]":
-                        continue
+                choices = data.get("choices")
+                delta = choices[0].get("delta")
 
-                    # 解析 SSE 数据
-                    if line.startswith("data: "):
-                        json_str = line[6:].strip()
-                        response = json.loads(json_str)
-                        if (
-                            "choices" in response
-                            and len(response["choices"]) > 0
-                            and "delta" in response["choices"][0]
-                        ):
-                            delta = response["choices"][0]["delta"]
-                            content = delta.get("content", None)
-                            reasoning_content = delta.get("reasoning_content", None)
-                            index = delta.get("index", 0)
-                            finish_reason = delta.get("finish_reason", None)
-
-                            # 使用基类的格式化方法重新格式化流式响应
-                            yield OpenAIStreamCompletion(
-                                chat_id,
-                                created_time,
-                                model,
-                                choices=[OpenAIStreamChoice(
-                                    delta=OpenAIStreamDelta(
-                                        content=content,
-                                        reasoning_content=reasoning_content
-                                    ),
-                                    index=index,
-                                    finish_reason=finish_reason
-                                )],
-                            )
-
-        except json.JSONDecodeError as e:
-            error_msg = f"JSON解析错误: {str(e)}"
-            logger.error(error_msg)
-            raise ClientError(error_msg) from e
-        except Exception as e:
-            error_msg = f"Stream chat请求失败: {str(e)}"
-            logger.error(error_msg)
-            raise ClientError(error_msg) from e
+                yield OpenAIStreamCompletion(
+                    id=chat_id,
+                    created=created,
+                    model=model,
+                    provider_chat_id=data.get("id"),
+                    choices=[OpenAIStreamChoice(
+                        delta=OpenAIStreamDelta(
+                            role=delta.get("role"),
+                            content=delta.get("content"),
+                            reasoning_content=delta.get("reasoning_content")
+                            ),
+                        index=choices[0].get("index"),
+                        finish_reason=choices[0].get("finish_reason")
+                        )
+                    ],
+                    usage=OpenAIUsage(
+                        completion_tokens=data.get("usage").get("completion_tokens"),
+                        prompt_tokens=data.get("usage").get("prompt_tokens"),
+                        total_tokens=data.get("usage").get("total_tokens")
+                    ) if data.get("usage") else None
+                )

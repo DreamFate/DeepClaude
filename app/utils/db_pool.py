@@ -15,117 +15,75 @@ logger = logging.getLogger("db_pool")
 class SQLiteConnectionPool:
     """SQLite数据库连接池"""
 
-    def __init__(self, db_path: str, max_connections: int = 5, check_interval: int = 60):
+    def __init__(self, db_path: str, max_connections: int = 5):
         """初始化连接池
 
         Args:
             db_path: 数据库文件路径
             max_connections: 最大连接数
-            check_interval: 连接健康检查间隔（秒）
         """
         self.db_path = db_path
         self.max_connections = max_connections
-        self.check_interval = check_interval
 
         # 确保数据库目录存在
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
         # 连接池
-        self.pool: List[sqlite3.Connection] = []
+        self.pool: List[Optional[sqlite3.Connection]] = [None] * max_connections
         # 可用连接索引
-        self.available: List[int] = []
+        self.available: List[int] = list(range(max_connections))
         # 连接使用状态
-        self.in_use: Dict[int, bool] = {}
-        # 连接创建时间
-        self.created_time: Dict[int, float] = {}
-        # 连接最后使用时间
-        self.last_used: Dict[int, float] = {}
+        self.in_use: Dict[int, bool] = {i: False for i in range(max_connections)}
 
         # 线程锁，保证线程安全
         self.lock = threading.RLock()
 
-        # 初始化连接池
-        self._initialize_pool()
-
-        # 启动健康检查线程
-        self.checker_thread = threading.Thread(target=self._connection_health_check, daemon=True)
-        self.checker_thread.start()
-
         logger.info("SQLite连接池初始化完成，最大连接数: %s", max_connections)
 
-    def _initialize_pool(self):
-        """初始化连接池"""
-        with self.lock:
-            for i in range(self.max_connections):
-                try:
-                    conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                    # 启用外键约束
-                    conn.execute("PRAGMA foreign_keys = ON")
-                    # 设置行工厂，返回字典而不是元组
-                    conn.row_factory = sqlite3.Row
+    def _create_connection(self, index: int) -> Optional[sqlite3.Connection]:
+        """创建新的数据库连接
 
-                    self.pool.append(conn)
-                    self.available.append(i)
-                    self.in_use[i] = False
-                    self.created_time[i] = time.time()
-                    self.last_used[i] = time.time()
+        Args:
+            index: 连接在池中的索引
 
-                    logger.debug("创建连接 #%s", i)
-                except sqlite3.Error as e:
-                    logger.error("初始化连接 #%s 失败: %s", i, e)
+        Returns:
+            Optional[sqlite3.Connection]: 新创建的连接，失败则返回None
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # 启用外键约束
+            conn.execute("PRAGMA foreign_keys = ON")
+            # 设置行工厂，返回字典而不是元组
+            conn.row_factory = sqlite3.Row
 
-    def _connection_health_check(self):
-        """连接健康检查线程"""
-        while True:
-            try:
-                time.sleep(self.check_interval)
-                self._check_connections()
-            except sqlite3.Error as e:
-                logger.error("连接健康检查异常: %s", e)
+            self.pool[index] = conn
+            logger.debug("创建连接 #%s 成功", index)
+            return conn
+        except sqlite3.Error as e:
+            logger.error("创建连接 #%s 失败: %s", index, e)
+            return None
 
-    def _check_connections(self):
-        """检查所有连接的健康状态"""
-        with self.lock:
-            current_time = time.time()
-            for i, conn in enumerate(self.pool):
-                # 跳过正在使用的连接
-                if self.in_use.get(i, False):
-                    continue
+    def _check_connection(self, index: int) -> bool:
+        """检查连接是否有效
 
-                try:
-                    # 执行简单查询测试连接
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT 1")
-                    cursor.fetchone()
-                    cursor.close()
-                    logger.debug("连接 #%s 健康检查通过", i)
-                except sqlite3.Error as e:
-                    logger.warning("连接 #%s 健康检查失败: %s，尝试重新创建", i, e)
-                    try:
-                        try:
-                        # 关闭旧连接
-                            conn.close()
-                        except sqlite3.Error:
-                            pass
+        Args:
+            index: 连接在池中的索引
 
-                        # 创建新连接
-                        new_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                        new_conn.execute("PRAGMA foreign_keys = ON")
-                        new_conn.row_factory = sqlite3.Row
+        Returns:
+            bool: 连接是否有效
+        """
+        conn = self.pool[index]
+        if conn is None:
+            return False
 
-                        # 更新连接池
-                        self.pool[i] = new_conn
-                        self.created_time[i] = current_time
-                        self.last_used[i] = current_time
-
-                        # 如果之前不在可用列表中，添加到可用列表
-                        if i not in self.available:
-                            self.available.append(i)
-                            self.in_use[i] = False
-
-                        logger.info("连接 #%s 已重新创建", i)
-                    except sqlite3.Error as e2:
-                        logger.error("重新创建连接 #%s 失败: %s", i, e2)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except sqlite3.Error:
+            return False
 
     def get_connection(self, max_wait=5, retry_interval=0.1) -> Optional[sqlite3.Connection]:
         """获取一个可用的数据库连接，如果没有可用连接则等待
@@ -142,9 +100,20 @@ class SQLiteConnectionPool:
             with self.lock:
                 if self.available:
                     index = self.available.pop(0)
-                    self.in_use[index] = True
-                    self.last_used[index] = time.time()
 
+                    # 检查连接是否存在且有效
+                    if self.pool[index] is None or not self._check_connection(index):
+                        # 连接不存在或无效，创建新连接
+                        conn = self._create_connection(index)
+                        if conn is None:
+                            # 创建失败，将索引放回可用列表
+                            self.available.append(index)
+                            time.sleep(retry_interval)
+                            wait_time += retry_interval
+                            continue
+
+                    # 标记为使用中
+                    self.in_use[index] = True
                     logger.debug("获取连接 #%s，剩余可用连接: %s", index, len(self.available))
                     return self.pool[index]
 
@@ -167,7 +136,6 @@ class SQLiteConnectionPool:
                     if i not in self.available:
                         self.available.append(i)
                     self.in_use[i] = False
-                    self.last_used[i] = time.time()
                     logger.debug("释放连接 #%s，当前可用连接: %s", i, len(self.available))
                     return
 
@@ -177,17 +145,16 @@ class SQLiteConnectionPool:
         """关闭所有连接"""
         with self.lock:
             for i, conn in enumerate(self.pool):
-                try:
-                    conn.close()
-                    logger.debug("关闭连接 #%s", i)
-                except sqlite3.Error as e:
-                    logger.error("关闭连接 #%s 失败: %s", i, e)
+                if conn is not None:
+                    try:
+                        conn.close()
+                        logger.debug("关闭连接 #%s", i)
+                    except sqlite3.Error as e:
+                        logger.error("关闭连接 #%s 失败: %s", i, e)
+                    self.pool[i] = None
 
-            self.pool.clear()
-            self.available.clear()
-            self.in_use.clear()
-            self.created_time.clear()
-            self.last_used.clear()
+            self.available = list(range(self.max_connections))
+            self.in_use = {i: False for i in range(self.max_connections)}
 
             logger.info("所有数据库连接已关闭")
 
@@ -282,13 +249,12 @@ class DBConnection:
 # 全局连接池实例
 DB_POOL = None
 
-def get_db_pool(db_path=None, max_connections=5, check_interval=60):
+def get_db_pool(db_path=None, max_connections=5):
     """获取全局数据库连接池实例
 
     Args:
         db_path: 数据库文件路径，仅在首次调用时有效
         max_connections: 最大连接数，仅在首次调用时有效
-        check_interval: 连接健康检查间隔（秒），仅在首次调用时有效
 
     Returns:
         SQLiteConnectionPool: 数据库连接池实例
@@ -297,8 +263,14 @@ def get_db_pool(db_path=None, max_connections=5, check_interval=60):
     if pool is None:
         if db_path is None:
             # 默认数据库路径
-            db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "deepclaude.db")
-        globals()["DB_POOL"] = SQLiteConnectionPool(db_path, max_connections, check_interval)
+            db_path = os.path.join(
+                os.path.dirname(
+                    os.path.dirname(
+                        os.path.dirname(__file__))),
+                "data",
+                "deepclaude.db"
+            )
+        globals()["DB_POOL"] = SQLiteConnectionPool(db_path, max_connections)
     return globals()["DB_POOL"]
 
 def get_db_connection():
