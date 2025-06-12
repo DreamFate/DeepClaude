@@ -1,6 +1,9 @@
+"""日志工具"""
+
+import sys
 import logging
 import colorlog
-import sys
+
 
 
 def setup_logger(name: str = "DeepClaude") -> logging.Logger:

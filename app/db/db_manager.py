@@ -3,15 +3,14 @@
 """
 
 import sqlite3
-import logging
+
 from typing import Dict, Any, Optional,Callable
 import functools
 
-from app.utils.db_pool import get_db_connection, close_db_pool,get_db_pool
+from app.db.db_pool import get_db_connection, close_db_pool,get_db_pool
 from app.db.db_config import ProviderConfig,ModelConfig,CompositeModelConfig,SystemSetting
+from app.utils.logger import logger
 
-# 设置日志
-logger = logging.getLogger("db_manager_pool")
 
 # 在文件顶部添加自定义异常类
 class DBManagerError(Exception):
@@ -63,6 +62,7 @@ class DBManager:
         在应用程序关闭时调用，确保所有数据库连接被正确关闭
         """
         close_db_pool()
+        logger.info("关闭数据库连接池")
 
     def open_db_manager(self):
         """打开数据库连接池
@@ -70,6 +70,7 @@ class DBManager:
         在应用程序启动时调用，确保所有数据库连接被正确打开
         """
         get_db_pool()
+        logger.info("打开数据库连接池")
 
     @handle_db_errors("初始化系统设置")
     def _init_system_settings(self):
@@ -80,34 +81,31 @@ class DBManager:
         """
         # 检查是否已有数据
         with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT COUNT(*) as count FROM system_settings")
-            row = cursor.fetchone()
+            db.execute("SELECT COUNT(*) as count FROM system_settings")
+            row = db.fetchone()
             if row and row["count"] > 0:
-                logger.debug("系统设置数据已存在，跳过默认设置")
+                logger.info("系统设置数据已存在，跳过默认设置")
                 return
 
             # 默认系统设置
             default_settings = [
                 # 日志级别
                 ("log_level", "INFO", "str"),
-                # 允许的源
-                ("allow_origins", "[\"*\"]", "json"),
                 # API密钥
                 ("api_key", "123456", "str"),
                 # 代理设置
-                ("proxy_open", "false", "bool"),
                 ("proxy_address", "127.0.0.1:7890", "str"),
                 # 缓存大小
                 ("model_cache_size", "5", "int"),
-                # 保存deepseek token
-                ("save_deepseek_tokens", "false", "bool"),
-                ("save_deepseek_tokens_max_tokens", "5", "int"),
+                # TCP连接池设置
+                ("tcp_connector_limit", "1000", "int"),
+                ("tcp_connector_limit_per_host", "0", "int"),
+                ("tcp_keepalive_timeout", "30.0", "float"),
             ]
 
             # 插入默认设置
             for key, value, type_name in default_settings:
-                cursor.execute("""
+                db.execute("""
                 INSERT OR IGNORE INTO system_settings (setting_key, setting_value, setting_type)
                 VALUES (?, ?, ?)
                 """, (key, value, type_name))
@@ -619,7 +617,7 @@ class DBManager:
             result = {}
             for row in rows:
                 setting = SystemSetting.from_db_row(row)
-                result[setting.key] = setting
+                result[setting.setting_key] = setting
 
             return result
 
@@ -637,7 +635,7 @@ class DBManager:
 
         with get_db_connection() as db:
             # 检查是否已存在
-            db.execute("SELECT 1 FROM system_settings WHERE setting_key = ?", (setting.key,))
+            db.execute("SELECT 1 FROM system_settings WHERE setting_key = ?", (setting.setting_key,))
             exists = db.fetchone() is not None
 
             if exists:
@@ -723,3 +721,5 @@ class DBManager:
                 self.save_setting(SystemSetting.from_db_row(setting_config))
 
             return True
+
+db_manager = DBManager()

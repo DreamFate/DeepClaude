@@ -5,8 +5,9 @@ from typing import Optional
 from fastapi import HTTPException, Header
 
 from app.utils.logger import logger
+from app.manager.model_manager import model_manager
 
-async def verify_api_key(current_api_key: str, authorization: Optional[str] = Header(None)) -> None:
+async def verify_api_key(authorization: Optional[str] = Header(None)) -> None:
     """验证API密钥
 
     Args:
@@ -23,7 +24,7 @@ async def verify_api_key(current_api_key: str, authorization: Optional[str] = He
         )
 
     api_key = authorization.replace("Bearer ", "").strip()
-    if api_key != current_api_key:
+    if api_key != model_manager.config.get("api_key").setting_value:
         logger.warning("无效的API密钥: %s", api_key)
         raise HTTPException(
             status_code=401,

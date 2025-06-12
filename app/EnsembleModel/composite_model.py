@@ -1,6 +1,6 @@
 """简单组合模型，顺序执行推理模型和目标模型"""
 
-from typing import List, Dict, Any,Optional
+from typing import List, Dict, Any,Optional,AsyncGenerator
 import asyncio
 
 from aiohttp.client_exceptions import ClientError
@@ -24,16 +24,15 @@ class CompositeModel:
         self.reasoning_client = reasoning_client
         self.target_client = target_client
 
-    async def chat(
+    async def stream_chat(
         self,
         chat_id: str,
         messages: List[Dict[str, str]],
         model: str,
-        stream: bool,
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
         cancel_flag: Optional[asyncio.Event] = None,
-    ) -> Any:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式聊天完成
 
         Args:
@@ -118,29 +117,20 @@ class CompositeModel:
 
             # 第三步：流式调用目标模型
 
-            if stream:
-                target_cancel_flag = asyncio.Event()
-                async for chunk in self.target_client.stream_chat(
-                    chat_id=chat_id,
-                    messages=target_messages,
-                    model=target_model,
-                    model_arg=model_arg,
-                    other_params=other_params.get("target_params"),
-                    cancel_flag=target_cancel_flag
-                ):
-                    if cancel_flag.is_set():
-                        target_cancel_flag.set()
-                        logger.info("用户取消请求")
-                        return
-                    yield chunk
-            else:
-                return self.target_client.chat(
-                    chat_id=chat_id,
-                    messages=target_messages,
-                    model=target_model,
-                    model_arg=model_arg,
-                    other_params=other_params.get("target_params")
-                )
+            target_cancel_flag = asyncio.Event()
+            async for chunk in self.target_client.stream_chat(
+                chat_id=chat_id,
+                messages=target_messages,
+                model=target_model,
+                model_arg=model_arg,
+                other_params=other_params.get("target_params"),
+                cancel_flag=target_cancel_flag
+            ):
+                if cancel_flag.is_set():
+                    target_cancel_flag.set()
+                    logger.info("用户取消请求")
+                    return
+                yield chunk
 
 
         except Exception as e:

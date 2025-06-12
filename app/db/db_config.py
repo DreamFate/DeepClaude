@@ -137,11 +137,12 @@ class CompositeModelConfig:
             "is_valid": 1 if self.is_valid else 0
         }
 
+@dataclass
 class SystemSetting:
     """系统设置数据类"""
-    key: str = ""
-    value: Any = None
-    type_name: str = "str"
+    setting_key: str = ""
+    setting_value: Any = None
+    setting_type: str = "str"
 
     @classmethod
     def from_db_row(cls, row: Dict[str, Any]):
@@ -154,22 +155,22 @@ class SystemSetting:
             SystemSetting: 系统设置对象
         """
         setting = cls(
-            key=row["setting_key"],
-            type_name=row["setting_type"]
+            setting_key=row["setting_key"],
+            setting_type=row["setting_type"]
         )
 
         # 根据类型转换值
         value = row["setting_value"]
-        if setting.type_name == "int":
-            setting.value = int(value)
-        elif setting.type_name == "float":
-            setting.value = float(value)
-        elif setting.type_name == "bool":
-            setting.value = value.lower() in ("true", "1", "yes")
-        elif setting.type_name == "json":
-            setting.value = json.loads(value)
+        if setting.setting_type == "int":
+            setting.setting_value = int(value)
+        elif setting.setting_type == "float":
+            setting.setting_value = float(value)
+        elif setting.setting_type == "bool":
+            setting.setting_value = value.lower() in ("true", "1", "yes")
+        elif setting.setting_type == "json":
+            setting.setting_value = json.loads(value)
         else:
-            setting.value = value
+            setting.setting_value = value
 
         return setting
 
@@ -180,24 +181,24 @@ class SystemSetting:
             Dict[str, Any]: 适用于数据库操作的字典
         """
         # 确定值的类型和字符串表示
-        if isinstance(self.value, int) and self.type_name != "bool":
+        if isinstance(self.setting_value, int) and self.setting_type != "bool":
             type_name = "int"
-            str_value = str(self.value)
-        elif isinstance(self.value, float):
+            str_value = str(self.setting_value)
+        elif isinstance(self.setting_value, float):
             type_name = "float"
-            str_value = str(self.value)
-        elif isinstance(self.value, bool):
+            str_value = str(self.setting_value)
+        elif isinstance(self.setting_value, bool):
             type_name = "bool"
-            str_value = "true" if self.value else "false"
-        elif isinstance(self.value, (dict, list)):
+            str_value = "true" if self.setting_value else "false"
+        elif isinstance(self.setting_value, (dict, list)):
             type_name = "json"
-            str_value = json.dumps(self.value, ensure_ascii=False)
+            str_value = json.dumps(self.setting_value, ensure_ascii=False)
         else:
             type_name = "str"
-            str_value = str(self.value)
+            str_value = str(self.setting_value)
 
         return {
-            "setting_key": self.key,
+            "setting_key": self.setting_key,
             "setting_value": str_value,
             "setting_type": type_name
         }

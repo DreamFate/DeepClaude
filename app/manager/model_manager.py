@@ -8,7 +8,7 @@ import aiohttp
 from fastapi.responses import StreamingResponse
 
 from app.utils.logger import logger
-from app.db.db_manager import DBManager
+from app.db.db_manager import db_manager
 from app.db.db_config import ModelConfig,ProviderConfig,CompositeModelConfig
 from app.clients.claude_client import ClaudeClient
 from app.clients.openai_compatible_client import OpenAICompatibleClient
@@ -19,7 +19,7 @@ from app.EnsembleModel.composite_model import CompositeModel
 class ModelManager:
     """模型管理器，处理请求参数"""
 
-    def __init__(self, db_manager: DBManager):
+    def __init__(self):
         """初始化模型管理器"""
         self.db_manager = db_manager
         # 获取系统配置信息
@@ -170,8 +170,9 @@ class ModelManager:
         # 获取模型详细配置
         model_details, model_type = self.get_model_details(model, model_type)
 
+        # 组合模型都用流式
         if model_type == "composite":
-            return await self.composite_model_response(model,model_details, messages, model_args, stream)
+            return await self.composite_model_response(model,model_details, messages, model_args)
 
         return await self.default_response(model_details, messages, model_args, stream)
 
@@ -239,7 +240,6 @@ class ModelManager:
         model_details:CompositeModelConfig,
         messages:List[Dict[str, str]],
         model_args:Dict[str, Any],
-        stream:bool,
     ) -> Any:
         """处理组合模型请求
 
@@ -289,26 +289,16 @@ class ModelManager:
             "target_params": None,
         }
 
-        if stream:
-            cancel_flag = self.register_cancel_event(chat_id)
-            return StreamingResponse(composite_model.chat(
+        cancel_flag = self.register_cancel_event(chat_id)
+        return StreamingResponse(composite_model.stream_chat(
                 chat_id=chat_id,
                 messages=messages,
                 model=model,
-                stream=True,
                 model_arg=model_args,
                 other_params=other_params,
                 cancel_flag=cancel_flag,
             ),
             media_type="text/event-stream",
-        )
-        return composite_model.chat(
-            chat_id=chat_id,
-            messages=messages,
-            model=model,
-            stream=False,
-            model_arg=model_args,
-            other_params=other_params,
         )
 
     def get_model_list(self) -> List[Dict[str, Any]]:
@@ -377,7 +367,7 @@ class ModelManager:
             Dict[str, Any]: 当前配置
         """
         # 每次都从文件重新加载最新配置
-        # self.config = self._load_config()
+        self.config = self.db_manager.get_all_settings()
         return self.config
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -448,11 +438,11 @@ class ModelManager:
         config = self.config
 
         # 连接池大小限制
-        limit = config.get("tcp_connector_limit", 100)
+        limit = config.get("tcp_connector_limit").setting_value or 100
         # 每个主机的连接限制
-        limit_per_host = config.get("tcp_connector_limit_per_host", 0)
+        limit_per_host = config.get("tcp_connector_limit_per_host").setting_value or 0
         # 连接保持活跃时间(秒)
-        keepalive_timeout = config.get("tcp_keepalive_timeout", 30.0)
+        keepalive_timeout = config.get("tcp_keepalive_timeout").setting_value or 30.0
 
         logger.info(
             "创建TCP连接池: limit=%s, limit_per_host=%s, keepalive_timeout=%s",
@@ -467,3 +457,5 @@ class ModelManager:
             force_close=False,
             enable_cleanup_closed=True
         )
+
+model_manager = ModelManager()

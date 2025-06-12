@@ -12,7 +12,7 @@ DeepClaude API 主模块
 """
 import os
 import logging
-from contextlib import asynccontextmanager
+import atexit
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,8 +23,8 @@ from aiohttp.client_exceptions import ClientError
 
 from app.utils.auth import verify_api_key
 from app.utils.logger import logger
-from app.manager.model_manager import ModelManager
-from app.db.db_manager import DBManager
+from app.db.db_manager import db_manager
+from app.manager.model_manager import model_manager
 
 
 
@@ -34,60 +34,35 @@ VERSION = "v1.0.1"
 # 显示当前的版本
 logger.info("当前版本: %s", VERSION)
 
-@asynccontextmanager
-async def lifespan(app_instance: FastAPI):
-    """管理FastAPI应用的生命周期
+db_manager.open_db_manager()
 
-    这个异步上下文管理器负责在应用启动时初始化必要的资源（如数据库连接池和模型管理器），
-    并在应用关闭时释放这些资源。
-
-    Args:
-        app (FastAPI): FastAPI应用实例
-
-    Yields:
-        None: 控制权交还给FastAPI服务器
-    """
-    # 初始化数据库连接池
-    db_manager = DBManager()
-    db_manager.open_db_manager()
-    logger.info("数据库连接池初始化完成")
-    app_instance.state.model_manager = ModelManager(db_manager)
-
-    # 配置 CORS
-    app_instance.add_middleware(
-        CORSMiddleware,
-        allow_origins=app_instance.state.model_manager.config.get("allow_origins", ["*"]),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # 设置日志级别（不重新创建logger）
-    logger.setLevel(getattr(logging, app_instance.state.model_manager.config.get("log_level", "INFO")))
-
-    yield
-
-    # 关闭数据库连接池
-    db_manager.close_db_manager()
-    logger.info("数据库连接池已关闭")
+logger.setLevel(getattr(logging, model_manager.config.get("log_level").setting_value, logging.INFO))
 
 # 创建 FastAPI 应用
-app = FastAPI(title="DeepClaude API", lifespan=lifespan)
+app = FastAPI(title="DeepClaude API")
+
+# 配置 CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 静态文件目录
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 # 挂载静态文件目录
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# 在程序退出时关闭数据库连接池
+atexit.register(db_manager.close_db_manager)
+
 # 验证日志级别
 logger.debug("当前日志级别为 DEBUG")
 logger.info("开始请求")
 
-def get_api_key_dependency():
-    """创建API密钥验证依赖"""
-    return verify_api_key(app.state.model_manager.config.get("api_key"))
-
-@app.get("/", dependencies=[Depends(get_api_key_dependency())])
+@app.get("/", dependencies=[Depends(verify_api_key)])
 async def root():
     """API根路径访问处理
 
@@ -97,7 +72,7 @@ async def root():
     return {"message": "Welcome to DeepClaude API", "version": VERSION}
 
 
-@app.post("/v1/chat/completions", dependencies=[Depends(get_api_key_dependency())])
+@app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
 async def chat_completions(request: Request):
     """处理聊天完成请求，使用 ModelManager 进行处理
 
@@ -115,7 +90,7 @@ async def chat_completions(request: Request):
         # 获取请求体
         body = await request.json()
         # 使用 ModelManager 处理请求，ModelManager 将处理不同的模型组合
-        response = await app.state.model_manager.process_request(body)
+        response = await model_manager.process_request(body)
         return response
     except ClientError as e:
         # 处理已知的客户端错误
@@ -164,7 +139,7 @@ async def chat_completions(request: Request):
             }
         )
 
-@app.post("/v1/cancel", dependencies=[Depends(get_api_key_dependency())])
+@app.post("/v1/cancel", dependencies=[Depends(verify_api_key)])
 async def cancel_request(request: Request):
     """取消正在进行的请求
 
@@ -178,7 +153,7 @@ async def cancel_request(request: Request):
         if not chat_id:
             return {"status": "error", "message": "缺少请求chat_id"}
 
-        success = app.state.model_manager.cancel_request(chat_id)
+        success = model_manager.cancel_request(chat_id)
 
         if success:
             return {"status": "success", "message": f"请求 {chat_id} 已取消"}
@@ -189,7 +164,7 @@ async def cancel_request(request: Request):
         return {"status": "error", "message": str(e)}
 
 
-@app.get("/v1/models", dependencies=[Depends(get_api_key_dependency())])
+@app.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models():
     """获取可用模型列表
 
@@ -197,7 +172,7 @@ async def list_models():
     返回格式遵循 OpenAI API 标准
     """
     try:
-        models = app.state.model_manager.get_model_list()
+        models = model_manager.get_model_list()
         return {"object": "list", "data": models}
     except Exception as e:
         logger.error("获取模型列表时发生错误: %s", e)
@@ -219,7 +194,7 @@ async def config_page():
         logger.error("返回配置页面时发生错误: %s", e)
         return {"error": str(e)}
 
-@app.get("/v1/config", dependencies=[Depends(get_api_key_dependency())])
+@app.get("/v1/config", dependencies=[Depends(verify_api_key)])
 async def get_config():
     """获取模型配置
 
@@ -227,13 +202,13 @@ async def get_config():
 """
     try:
         # 使用 ModelManager 获取配置
-        config = app.state.model_manager.get_config()
+        config = model_manager.get_config()
         return config
     except Exception as e:
         logger.error("获取配置时发生错误: %s", e)
         return {"error": str(e)}
 
-@app.post("/v1/config", dependencies=[Depends(get_api_key_dependency())])
+@app.post("/v1/config", dependencies=[Depends(verify_api_key)])
 async def update_config(request: Request):
     """更新模型配置
 
@@ -244,7 +219,7 @@ async def update_config(request: Request):
         body = await request.json()
 
         # 使用 ModelManager 更新配置
-        app.state.model_manager.update_config(body)
+        model_manager.update_config(body)
 
         return {"message": "配置已更新"}
     except Exception as e:

@@ -104,9 +104,9 @@ class OpenAIUsage:
 class OpenAIStreamCompletion:
     """OpenAI兼容的流式响应对象"""
     id: str
+    model: str
     object: str = "chat.completion.chunk"
     created: int = field(default_factory=lambda: int(time.time()))
-    model: str
     choices: List[OpenAIStreamChoice] = field(default_factory=list)
     # 这里为供应商拿回来的chat_id
     provider_chat_id: Optional[str] = None
@@ -126,9 +126,9 @@ class OpenAIStreamCompletion:
 class OpenAICompletion:
     """OpenAI兼容的非流式响应对象"""
     id: str
+    model: str
     object: str = "chat.completion"
     created: int = field(default_factory=lambda: int(time.time()))
-    model: str
     choices: List[OpenAIChoice] = field(default_factory=list)
     # 这里为供应商拿回来的chat_id
     provider_chat_id: Optional[str] = None
