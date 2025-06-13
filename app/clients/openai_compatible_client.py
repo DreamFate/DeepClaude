@@ -4,8 +4,11 @@ import json
 import time
 from typing import AsyncGenerator, Optional, Dict, Any, List,Tuple
 
+
 import asyncio
 import aiohttp
+
+from app.utils.logger import logger
 
 from app.clients.base_client import BaseClient,handle_client_errors
 from app.chatcompletion.openai_compatible import (
@@ -80,7 +83,7 @@ class OpenAICompatibleClient(BaseClient):
         model: str,
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
-    ) -> Dict[str, Any]:
+    ) -> OpenAICompletion:
         """非流式对话
 
         Args:
@@ -140,7 +143,7 @@ class OpenAICompatibleClient(BaseClient):
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
         cancel_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[OpenAIStreamCompletion, None]:
         """流式对话
 
         Args:
@@ -151,7 +154,7 @@ class OpenAICompatibleClient(BaseClient):
             cancel_flag: 取消标志
 
         Yields:
-            Dict[str, Any]: OpenAI 兼容格式的流式响应
+            OpenAIStreamCompletion: OpenAI 兼容格式的流式响应
 
         Raises:
             ClientError: 请求错误
@@ -168,6 +171,10 @@ class OpenAICompatibleClient(BaseClient):
                 data = self.parse_json_line(line)
                 if data is None:
                     continue
+
+                if data == "[DONE]":
+                    logger.debug("流式对话结束")
+                    break
 
                 choices = data.get("choices")
                 delta = choices[0].get("delta")

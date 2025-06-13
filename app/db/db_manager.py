@@ -99,7 +99,7 @@ class DBManager:
                 ("model_cache_size", "5", "int"),
                 # TCP连接池设置
                 ("tcp_connector_limit", "1000", "int"),
-                ("tcp_connector_limit_per_host", "0", "int"),
+                ("tcp_connector_limit_per_host", "100", "int"),
                 ("tcp_keepalive_timeout", "30.0", "float"),
             ]
 
@@ -352,14 +352,15 @@ class DBManager:
     def get_model(
         self,
         model_name: Optional[str] = None,
-        model_id: Optional[str] = None,
+        models_id: Optional[int] = None,
         is_valid: Optional[bool] = None
     ) -> Optional[ModelConfig]:
         """获取指定模型配置
 
         Args:
             model_name: 模型名称
-            model_id: 模型ID
+            models_id: 模型ID
+            is_valid: 是否只获取有效的模型
 
         Returns:
             Optional[ModelConfig]: 模型配置，如果不存在则返回None
@@ -376,9 +377,9 @@ class DBManager:
             if model_name:
                 sql += " AND model_name = ?"
                 params.append(model_name)
-            if model_id:
-                sql += " AND model_id = ?"
-                params.append(model_id)
+            if models_id:
+                sql += " AND id = ?"
+                params.append(models_id)
             if is_valid:
                 sql += " AND is_valid = ?"
                 params.append(is_valid)
@@ -424,9 +425,9 @@ class DBManager:
                 # 插入
                 db.execute('''
                 INSERT INTO models (
-                    model_name, model_id, api_key, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
+                    model_name, model_id, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
                     is_origin_output
-                ) VALUES (:model_name, :model_id, :api_key, :provider_id, :is_origin_reasoning, :is_valid, :model_type, :model_format, :is_origin_output)
+                ) VALUES (:model_name, :model_id, :provider_id, :is_origin_reasoning, :is_valid, :model_type, :model_format, :is_origin_output)
                 ''', db_dict)
 
             return True
@@ -489,14 +490,14 @@ class DBManager:
     def get_composite_model(
         self,
         model_name: Optional[str]=None,
-        model_id:Optional[str]=None,
+        composite_models_id:Optional[int]=None,
         is_valid:Optional[bool]=None
     ) -> Optional[CompositeModelConfig]:
         """获取指定组合模型配置
 
         Args:
             model_name: 模型名称
-            model_id: 模型ID
+            composite_models_id: 组合模型ID
             is_valid: 是否只获取有效的组合模型
 
         Returns:
@@ -515,9 +516,9 @@ class DBManager:
             if model_name:
                 sql += " AND model_name = ?"
                 params.append(model_name)
-            if model_id:
-                sql += " AND model_id = ?"
-                params.append(model_id)
+            if composite_models_id:
+                sql += " AND id = ?"
+                params.append(composite_models_id)
             if is_valid:
                 sql += " AND is_valid = ?"
                 params.append(is_valid)

@@ -56,7 +56,7 @@ class DeepSeekClient(BaseClient):
         model_arg: Dict[str, Any],
         other_params: Dict[str, Any] = None,
         cancel_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[tuple[str, str], None]:
+    ) -> AsyncGenerator[OpenAIStreamCompletion, None]:
         """流式对话
 
         Args:
@@ -66,9 +66,7 @@ class DeepSeekClient(BaseClient):
             other_params: 其他参数
 
         Yields:
-            tuple[str, str]: (内容类型, 内容)
-                内容类型: "reasoning" 或 "content"
-                内容: 实际的文本内容
+            OpenAIStreamCompletion: OpenAI 兼容格式的流式响应
         """
 
         is_origin_reasoning = other_params.get("is_origin_reasoning", True)
@@ -89,6 +87,9 @@ class DeepSeekClient(BaseClient):
                 data = self.parse_json_line(line)
                 if data is None:
                     continue
+                if data == "[DONE]":
+                    logger.debug("流式对话结束")
+                    break
 
                 choices = data.get("choices")
                 delta = choices[0].get("delta")
@@ -171,7 +172,7 @@ class DeepSeekClient(BaseClient):
         model: str,
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
-    ) -> Dict[str, Any]:
+    ) -> OpenAICompletion:
         """非流式对话
 
         Args:

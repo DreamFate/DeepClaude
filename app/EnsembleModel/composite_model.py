@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any,Optional,AsyncGenerator
 import asyncio
-
+import tiktoken
 from aiohttp.client_exceptions import ClientError
 from app.clients.base_client import BaseClient
 from app.utils.logger import logger
@@ -32,7 +32,7 @@ class CompositeModel:
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
         cancel_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[Dict[str, str], None]:
         """流式聊天完成
 
         Args:
@@ -42,7 +42,7 @@ class CompositeModel:
             claude_model: Claude模型名称（可选）
 
         Yields:
-            bytes: 流式响应数据
+            Dict[str, str]: 流式响应数据
         """
         # 第一步：调用推理模型获取推理结果
         temp_content = ""
@@ -69,10 +69,12 @@ class CompositeModel:
                     logger.info("用户取消请求")
                     return
 
+                yield chunk
+
                 # 解析内容
-                delta = chunk.get("choices",[])[0].get("delta",{})
-                content = delta.get("content")
-                reasoning_content = delta.get("reasoning_content")
+                delta = chunk.choices[0].delta
+                content = delta.content
+                reasoning_content = delta.reasoning_content
 
                 if reasoning_content:
                     temp_content += reasoning_content
@@ -87,6 +89,11 @@ class CompositeModel:
                 error_msg = "未能获取到有效的推理内容"
                 logger.error(error_msg)
                 raise ClientError(error_msg)
+
+            encoding = tiktoken.encoding_for_model("gpt-4o")
+            input_tokens = encoding.encode(temp_content)
+            logger.debug("输入 Tokens: %s", len(input_tokens))
+            logger.debug("推理模型思考链: %s", temp_content)
 
             # 第二步：准备目标模型的输入
             target_messages = messages.copy()

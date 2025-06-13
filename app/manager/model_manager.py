@@ -3,6 +3,7 @@
 from typing import Dict, Any, Tuple, List, Optional
 import asyncio
 import time
+import json
 import aiohttp
 
 from fastapi.responses import StreamingResponse
@@ -28,6 +29,23 @@ class ModelManager:
         self.cancel_events: Dict[str, asyncio.Event] = {}
         # 创建TCP连接池
         self.connector = self._create_tcp_connector()
+
+    async def stream_wrapper(self, async_iter, chat_id=None):
+        """流式包装器"""
+        try:
+            async for item in async_iter:
+                logger.info("流式输出: %s", type(item))
+                if item is None:
+                    continue
+                if hasattr(item, "to_dict"):
+                    data = json.dumps(item.to_dict(), ensure_ascii=False)
+                else:
+                    data = json.dumps(item, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+        finally:
+            if chat_id:
+                # 更新数据库中的chat_id状态
+                self.cancel_events.pop(chat_id, None)
 
     def get_system_config(self) -> Dict[str, Any]:
         """获取系统配置信息
@@ -140,7 +158,7 @@ class ModelManager:
                 proxy= isproxy_open,
             )
             return instance
-        if model_format == "reasoner":
+        if model_format == "deepseek":
             instance = DeepSeekClient(
                 api_key=provider.api_key,
                 api_url=api_url,
@@ -172,7 +190,7 @@ class ModelManager:
 
         # 组合模型都用流式
         if model_type == "composite":
-            return await self.composite_model_response(model,model_details, messages, model_args)
+            return self.composite_model_response(model,model_details, messages, model_args)
 
         return await self.default_response(model_details, messages, model_args, stream)
 
@@ -186,7 +204,7 @@ class ModelManager:
     ) -> Any:
         """处理默认响应"""
 
-        provider: ProviderConfig = self.db_manager.get_provider(model_details.provider_id)
+        provider: ProviderConfig = self.db_manager.get_provider(provider_id=model_details.provider_id)
         model_instance = self.create_instance(provider, model_details.model_format)
 
         chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
@@ -200,11 +218,11 @@ class ModelManager:
             if stream:
                 headers,data = model_instance.format_data(
                     model_instance.api_key, model_details.model_id, messages,model_args, stream=True)
-                return StreamingResponse(
+                return StreamingResponse(self.stream_wrapper(
                     model_instance.original_stream_chat(
                         headers=headers,
                         data=data,
-                    ),
+                    )),
                     media_type="text/event-stream",
                 )
             headers,data = model_instance.format_data(
@@ -216,16 +234,17 @@ class ModelManager:
 
         # 处理请求
         if stream:
-            return StreamingResponse(
-                model_instance.stream_chat(
-                    chat_id=chat_id,
-                    messages=messages,
-                    model=model_details.model_id,
-                    model_arg=model_args,
-                    other_params=other_params,
-                ),
-                media_type="text/event-stream",
-            )
+            cancel_flag = self.register_cancel_event(chat_id)
+            return StreamingResponse(self.stream_wrapper(model_instance.stream_chat(
+                chat_id=chat_id,
+                messages=messages,
+                model=model_details.model_id,
+                model_arg=model_args,
+                other_params=other_params,
+                cancel_flag=cancel_flag,
+            ),chat_id),
+            media_type="text/event-stream",
+        )
         return await model_instance.chat(
             chat_id=chat_id,
             messages=messages,
@@ -257,21 +276,21 @@ class ModelManager:
         reasoner_model_id = model_details.reasoner_model_id
         general_model_id = model_details.general_model_id
 
-        reasoner_model: Optional[ModelConfig] = self.db_manager.get_model(model_id=reasoner_model_id,is_valid=True)
-        general_model: Optional[ModelConfig] = self.db_manager.get_model(model_id=general_model_id,is_valid=True)
+        reasoner_model: Optional[ModelConfig] = self.db_manager.get_model(models_id=reasoner_model_id,is_valid=True)
+        general_model: Optional[ModelConfig] = self.db_manager.get_model(models_id=general_model_id,is_valid=True)
 
         if not reasoner_model or not general_model:
             raise ValueError("组合模型配置不完整")
 
         # 获取reasoner实例
-        reasoner_provider_id = reasoner_model.provider_id
+        reasoner_provider = self.db_manager.get_provider(provider_id=reasoner_model.provider_id)
         reasoner_model_format = reasoner_model.model_format
-        reasoner_instance = self.create_instance(reasoner_provider_id, reasoner_model_format)
+        reasoner_instance = self.create_instance(reasoner_provider, reasoner_model_format)
 
         # 获取general实例
-        general_provider_id = general_model.provider_id
+        general_provider = self.db_manager.get_provider(provider_id=general_model.provider_id)
         general_model_format = general_model.model_format
-        general_instance = self.create_instance(general_provider_id, general_model_format)
+        general_instance = self.create_instance(general_provider, general_model_format)
 
         composite_model = CompositeModel(
             reasoning_client=reasoner_instance,
@@ -290,14 +309,14 @@ class ModelManager:
         }
 
         cancel_flag = self.register_cancel_event(chat_id)
-        return StreamingResponse(composite_model.stream_chat(
+        return StreamingResponse(self.stream_wrapper(composite_model.stream_chat(
                 chat_id=chat_id,
                 messages=messages,
                 model=model,
                 model_arg=model_args,
                 other_params=other_params,
                 cancel_flag=cancel_flag,
-            ),
+            ),chat_id),
             media_type="text/event-stream",
         )
 

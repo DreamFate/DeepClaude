@@ -59,7 +59,7 @@ class ClaudeClient(BaseClient):
         model: str,
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
+    ) -> OpenAICompletion:
         """非流式对话
 
         Args:
@@ -70,7 +70,7 @@ class ClaudeClient(BaseClient):
             system_prompt: 系统提示
 
         Returns:
-            Dict[str, Any]: OpenAI 格式的完整响应
+            OpenAICompletion: OpenAI 格式的完整响应
         """
 
         headers,data = self.format_data(self.api_key, model, messages, model_arg, stream=False)
@@ -111,7 +111,7 @@ class ClaudeClient(BaseClient):
         model_arg: Dict[str, Any] = None,
         other_params: Dict[str, Any] = None,
         cancel_flag: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[tuple[str, str], None]:
+    ) -> AsyncGenerator[OpenAIStreamCompletion, None]:
         """流式对话
 
         Args:
@@ -122,9 +122,7 @@ class ClaudeClient(BaseClient):
             system_prompt: 系统提示
 
         Yields:
-            tuple[str, str]: (内容类型, 内容)
-                内容类型: "answer"
-                内容: 实际的文本内容
+            OpenAIStreamCompletion: OpenAI 兼容格式的流式响应
         """
 
         headers,data = self.format_data(self.api_key, model, messages, model_arg, stream=True)
@@ -142,6 +140,10 @@ class ClaudeClient(BaseClient):
                 data = self.parse_json_line(line)
                 if data is None:
                     continue
+
+                if data == "[DONE]":
+                    logger.debug("流式对话结束")
+                    break
 
                 chat_type = data.get("type")
                 if chat_type == "message_start":

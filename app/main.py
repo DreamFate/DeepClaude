@@ -35,6 +35,7 @@ VERSION = "v1.0.1"
 logger.info("当前版本: %s", VERSION)
 
 db_manager.open_db_manager()
+#model_manager.test_data()
 
 logger.setLevel(getattr(logging, model_manager.config.get("log_level").setting_value, logging.INFO))
 
