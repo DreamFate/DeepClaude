@@ -3,9 +3,9 @@
 from typing import List, Dict, Any,Optional,AsyncGenerator
 import asyncio
 import tiktoken
-from aiohttp.client_exceptions import ClientError
 from app.clients.base_client import BaseClient
 from app.utils.logger import logger
+from app.utils.error import ClientAPIError
 
 class CompositeModel:
     """简单组合模型，顺序执行推理模型和目标模型"""
@@ -54,6 +54,7 @@ class CompositeModel:
 
             reasoning_cancel_flag = asyncio.Event()
 
+            logger.info("推理模型%s输出开始", reasoning_model)
             # 流式调用推理模型
             async for chunk in self.reasoning_client.stream_chat(
                 chat_id=chat_id,
@@ -88,12 +89,14 @@ class CompositeModel:
             if not temp_content:
                 error_msg = "未能获取到有效的推理内容"
                 logger.error(error_msg)
-                raise ClientError(error_msg)
+                raise ClientAPIError(error=error_msg)
 
             encoding = tiktoken.encoding_for_model("gpt-4o")
             input_tokens = encoding.encode(temp_content)
             logger.debug("输入 Tokens: %s", len(input_tokens))
             logger.debug("推理模型思考链: %s", temp_content)
+
+            logger.info("思维链获取完毕,长度约为%s", len(temp_content))
 
             # 第二步：准备目标模型的输入
             target_messages = messages.copy()
@@ -116,13 +119,14 @@ class CompositeModel:
 
                 target_messages[-1]["content"] = fixed_content
             else:
-                raise ClientError("未能获取到有效的用户消息")
+                raise ClientAPIError(error="未能获取到有效的用户消息")
 
             if cancel_flag.is_set():
                 logger.info("用户取消请求")
                 return
 
             # 第三步：流式调用目标模型
+            logger.info("目标模型%s输出开始", target_model)
 
             target_cancel_flag = asyncio.Event()
             async for chunk in self.target_client.stream_chat(
@@ -141,6 +145,6 @@ class CompositeModel:
 
 
         except Exception as e:
-            error_msg = f"{model}请求处理异常: {str(e)}"
+            error_msg = f"组合模型{model}请求处理异常: {str(e)}"
             logger.error(error_msg)
-            raise ClientError(error_msg) from e
+            raise

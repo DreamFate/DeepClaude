@@ -1,59 +1,16 @@
 """基础客户端类"""
 
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Optional, Dict, Any, List, Tuple, Callable
+from typing import AsyncGenerator, Optional, Dict, Any, List, Tuple
 import json
-import functools
 import asyncio
-import inspect
 import aiohttp
+from app.utils.logger import logger
+from app.utils.error import handle_http_error
 from app.chatcompletion.openai_compatible import (
     OpenAICompletion,
     OpenAIStreamCompletion,
 )
-
-from aiohttp.client_exceptions import ClientError, ServerTimeoutError
-
-from app.utils.logger import logger
-
-def handle_all_client_errors(operation_name, e):
-    """处理客户端错误"""
-    if isinstance(e, ServerTimeoutError):
-        error_msg = f"{operation_name}请求超时: {str(e)}"
-    elif isinstance(e, ClientError):
-        error_msg = f"{operation_name}客户端错误: {str(e)}"
-    elif isinstance(e, json.JSONDecodeError):
-        error_msg = f"JSON 解析错误: {str(e)}"
-    else:
-        error_msg = f"{operation_name}请求处理异常: {str(e)}"
-    logger.error(error_msg)
-    raise ClientError(error_msg) from e
-
-def handle_client_errors(operation_name: str):
-    """处理客户端错误的装饰器
-
-    Args:
-        operation_name: 操作名称，用于日志记录
-    """
-    def decorator(func: Callable):
-        if inspect.isasyncgenfunction(func):
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    async for item in func(*args, **kwargs):
-                        yield item
-                except Exception as e:
-                    handle_all_client_errors(operation_name, e)
-            return wrapper
-        else:
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    handle_all_client_errors(operation_name, e)
-            return wrapper
-    return decorator
 
 class BaseClient(ABC):
     """基础客户端类"""
@@ -160,34 +117,30 @@ class BaseClient(ABC):
         """
         proxy_url = self._get_proxy_url()
 
-        try:
-            async with aiohttp.ClientSession(connector=self.connector, connector_owner=False) as session:
-                async with session.post(
-                    self.api_url,
-                    headers=headers,
-                    json=data,
-                    timeout=self.timeout,
-                    proxy=proxy_url
-                ) as response:
-                    # 检查响应状态
-                    if not response.ok:
-                        error_text = await response.text()
-                        error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
-                        logger.error(error_msg)
-                        raise ClientError(error_msg)
+        async with aiohttp.ClientSession(
+            connector=self.connector,
+            connector_owner=False
+        ) as session:
+            async with session.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=self.timeout,
+                proxy=proxy_url
+            ) as response:
+                # 检查响应状态
+                if not response.ok:
+                    await handle_http_error(response)
 
-                    # 流式读取响应内容
-                    async for chunk in response.content.iter_chunked(buffer_size):
-                        if cancel_flag and cancel_flag.is_set():
-                            logger.debug("请求被用户取消，正在关闭连接")
-                            response.release()
-                            break
-                        if chunk:  # 过滤空chunks
-                            yield chunk
-        except Exception as e:
-            handle_all_client_errors("流式请求", e)
+                # 流式读取响应内容
+                async for chunk in response.content.iter_chunked(buffer_size):
+                    if cancel_flag and cancel_flag.is_set():
+                        logger.debug("请求被用户取消，正在关闭连接")
+                        response.release()
+                        break
+                    if chunk:  # 过滤空chunks
+                        yield chunk
 
-    @handle_client_errors(operation_name="非流式请求")
     async def _make_non_streaming_request(
         self,
         headers: Dict[str, str],
@@ -209,7 +162,10 @@ class BaseClient(ABC):
         """
         proxy_url = self._get_proxy_url()
 
-        async with aiohttp.ClientSession(connector=self.connector) as session:
+        async with aiohttp.ClientSession(
+            connector=self.connector,
+            connector_owner=False
+        ) as session:
             async with session.post(
                 self.api_url,
                 headers=headers,
@@ -217,17 +173,13 @@ class BaseClient(ABC):
                 timeout=self.timeout,
                 proxy=proxy_url
             ) as response:
-                # 检查响应状态
+                # 检查响应状态``
                 if not response.ok:
-                    error_text = await response.text()
-                    error_msg = f"API 请求失败: 状态码 {response.status}, 错误信息: {error_text}"
-                    logger.error(error_msg)
-                    raise ClientError(error_msg)
+                    await handle_http_error(response)
 
-                # 读取完整响应内容
-                return await response.read()
+            # 读取完整响应内容
+            return await response.read()
 
-    @handle_client_errors(operation_name="原始非流式对话")
     async def original_chat(
         self,
         headers: Dict[str, str],
@@ -242,14 +194,12 @@ class BaseClient(ABC):
         Returns:
             Dict[str, Any]: 完整响应
         """
-
         response_bytes = await self._make_non_streaming_request(headers, data)
 
         response = json.loads(response_bytes.decode("utf-8"))
 
         return response
 
-    @handle_client_errors(operation_name="原始流式对话")
     async def original_stream_chat(
         self,
         headers: Dict[str, str],

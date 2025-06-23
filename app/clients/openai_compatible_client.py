@@ -10,7 +10,7 @@ import aiohttp
 
 from app.utils.logger import logger
 
-from app.clients.base_client import BaseClient,handle_client_errors
+from app.clients.base_client import BaseClient
 from app.chatcompletion.openai_compatible import (
     OpenAICompletion,
     OpenAIStreamCompletion, OpenAIStreamChoice,
@@ -75,7 +75,6 @@ class OpenAICompatibleClient(BaseClient):
         data = self._add_model_params(data, model_arg)
         return headers,data
 
-    @handle_client_errors("OpenAI兼容非流式对话")
     async def chat(
         self,
         chat_id: str,
@@ -134,7 +133,6 @@ class OpenAICompatibleClient(BaseClient):
             ) if response.get("usage") else None
         )
 
-    @handle_client_errors("OpenAI兼容流式对话")
     async def stream_chat(
         self,
         chat_id: str,

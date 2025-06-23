@@ -15,7 +15,7 @@ from app.chatcompletion.openai_compatible import (
     OpenAIStreamDelta,OpenAIUsage
     )
 from app.chatcompletion.request_claude import format_claude_request
-from .base_client import BaseClient, handle_client_errors
+from .base_client import BaseClient
 
 
 class ClaudeClient(BaseClient):
@@ -51,7 +51,6 @@ class ClaudeClient(BaseClient):
         headers,data = format_claude_request(api_key, model, messages, model_arg, stream)
         return headers,data
 
-    @handle_client_errors("Claude非流式输出")
     async def chat(
         self,
         chat_id: str,
@@ -102,7 +101,6 @@ class ClaudeClient(BaseClient):
             ) if response.get("usage") else None
         )
 
-    @handle_client_errors("Claude流式输出")
     async def stream_chat(
         self,
         chat_id: str,

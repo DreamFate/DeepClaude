@@ -34,7 +34,6 @@ class ModelManager:
         """流式包装器"""
         try:
             async for item in async_iter:
-                logger.info("流式输出: %s", type(item))
                 if item is None:
                     continue
                 if hasattr(item, "to_dict"):
@@ -43,6 +42,7 @@ class ModelManager:
                     data = json.dumps(item, ensure_ascii=False)
                 yield f"data: {data}\n\n"
         finally:
+            logger.info("当前流式输出结束")
             if chat_id:
                 # 更新数据库中的chat_id状态
                 self.cancel_events.pop(chat_id, None)
@@ -167,7 +167,7 @@ class ModelManager:
             )
             return instance
 
-        raise ValueError(f"不支持的供应商格式: {model_format}")
+        raise ValueError(f"不支持的供应商格式: {model_format},请检查模型配置")
 
 
     async def process_request(self, body: Dict[str, Any]) -> Any:
@@ -204,7 +204,9 @@ class ModelManager:
     ) -> Any:
         """处理默认响应"""
 
-        provider: ProviderConfig = self.db_manager.get_provider(provider_id=model_details.provider_id)
+        provider: ProviderConfig = self.db_manager.get_provider(
+            provider_id=model_details.provider_id
+        )
         model_instance = self.create_instance(provider, model_details.model_format)
 
         chat_id = f"chatcmpl-{hex(int(time.time() * 1000))[2:]}"
@@ -213,11 +215,17 @@ class ModelManager:
             "is_origin_reasoning": model_details.is_origin_reasoning,
         }
 
+        logger.info("当前模型%s输出开始", model_details.model_id)
         # 原始输出
         if model_details.is_origin_output:
             if stream:
                 headers,data = model_instance.format_data(
-                    model_instance.api_key, model_details.model_id, messages,model_args, stream=True)
+                    model_instance.api_key,
+                    model_details.model_id,
+                    messages,
+                    model_args,
+                    stream=True,
+                )
                 return StreamingResponse(self.stream_wrapper(
                     model_instance.original_stream_chat(
                         headers=headers,
@@ -276,11 +284,17 @@ class ModelManager:
         reasoner_model_id = model_details.reasoner_model_id
         general_model_id = model_details.general_model_id
 
-        reasoner_model: Optional[ModelConfig] = self.db_manager.get_model(models_id=reasoner_model_id,is_valid=True)
-        general_model: Optional[ModelConfig] = self.db_manager.get_model(models_id=general_model_id,is_valid=True)
+        reasoner_model: Optional[ModelConfig] = self.db_manager.get_model(
+            models_id=reasoner_model_id,
+            is_valid=True
+        )
+        general_model: Optional[ModelConfig] = self.db_manager.get_model(
+            models_id=general_model_id,
+            is_valid=True
+        )
 
         if not reasoner_model or not general_model:
-            raise ValueError("组合模型配置不完整")
+            raise ValueError("组合模型配置不完整，请检查模型配置")
 
         # 获取reasoner实例
         reasoner_provider = self.db_manager.get_provider(provider_id=reasoner_model.provider_id)
@@ -307,6 +321,8 @@ class ModelManager:
             },
             "target_params": None,
         }
+
+        logger.info("组合模型%s输出开始", model)
 
         cancel_flag = self.register_cancel_event(chat_id)
         return StreamingResponse(self.stream_wrapper(composite_model.stream_chat(
@@ -388,30 +404,6 @@ class ModelManager:
         # 每次都从文件重新加载最新配置
         self.config = self.db_manager.get_all_settings()
         return self.config
-
-    def update_config(self, config: Dict[str, Any]) -> None:
-        """更新配置
-
-        Args:
-            config: 新配置
-
-        Raises:
-            ValueError: 配置无效
-        """
-        # 验证配置
-        if not isinstance(config, dict):
-            raise ValueError("配置必须是字典")
-
-        # 更新配置
-        self.config = config
-
-        # # 清空模型实例缓存，以便重新创建
-        # self.model_cache.clear()
-        # logger.info("配置已更新，模型实例缓存已清空")
-
-        # # 保存配置到文件
-        # with open(self.config_path, "w", encoding="utf-8") as f:
-        #     json.dump(config, f, ensure_ascii=False, indent=4)
 
     def register_cancel_event(self, request_id: str) -> asyncio.Event:
         """注册一个取消事件

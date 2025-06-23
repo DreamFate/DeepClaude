@@ -15,7 +15,7 @@ from app.chatcompletion.openai_compatible import (
     OpenAIStreamDelta,OpenAIUsage,OpenAIChoice,OpenAIMessage
     )
 from app.chatcompletion.request_deepseek import format_deepseek_request
-from .base_client import BaseClient,handle_client_errors
+from .base_client import BaseClient
 
 class DeepSeekClient(BaseClient):
     """DeepSeek API 客户端"""
@@ -47,7 +47,6 @@ class DeepSeekClient(BaseClient):
     ) -> Tuple[Dict[str, str], Dict[str, Any]]:
         return format_deepseek_request(api_key, model, messages, model_arg, stream)
 
-    @handle_client_errors("deepseek流式对话")
     async def stream_chat(
         self,
         chat_id: str,
@@ -164,7 +163,6 @@ class DeepSeekClient(BaseClient):
                         ) if data.get("usage") else None
                     )
 
-    @handle_client_errors("deepseek非流式对话")
     async def chat(
         self,
         chat_id: str,

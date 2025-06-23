@@ -5,12 +5,9 @@ SQLite数据库连接池实现
 import sqlite3
 import threading
 import time
-import logging
 from typing import List, Optional, Dict
 import os
-
-# 设置日志
-logger = logging.getLogger("db_pool")
+from app.utils.logger import logger
 
 class SQLiteConnectionPool:
     """SQLite数据库连接池"""

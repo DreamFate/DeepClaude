@@ -19,10 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-from aiohttp.client_exceptions import ClientError
 
 from app.utils.auth import verify_api_key
 from app.utils.logger import logger
+from app.utils.error import ClientAPIError
 from app.db.db_manager import db_manager
 from app.manager.model_manager import model_manager
 
@@ -93,50 +93,34 @@ async def chat_completions(request: Request):
         # 使用 ModelManager 处理请求，ModelManager 将处理不同的模型组合
         response = await model_manager.process_request(body)
         return response
-    except ClientError as e:
-        # 处理已知的客户端错误
-
-        error_message = str(e)
-        error_code = e.status_code if hasattr(e, 'status_code') else 500
-        error_type = e.error_type if hasattr(e, 'error_type') else "其他错误"
-        error_info={
-            "error": {
-                "message": error_message,
-                "type": error_type,
-                "code": error_code
-            }
-        }
-
-        # 处理常见的错误信息
-        if "Input length" in error_message:
-            error_info["message_details"] = "输入的上下文内容过长，超过了模型的最大处理长度限制。请减少输入内容或分段处理。"
-        elif "InvalidParameter" in error_message:
-            error_info["message_details"] = "请求参数无效，请检查输入内容。"
-        elif "BadRequest" in error_message:
-            error_info["message_details"] = "请求格式错误，请检查输入内容。"
-
-        logger.error("客户端错误: %s - %s", error_type, str(e))
+    except ValueError as e:
+        # 处理参数验证错误
+        logger.error("参数验证错误: %s", str(e))
         return JSONResponse(
-            status_code=error_code,
+            status_code=400,
             content={
-                "error": {
-                    "message": error_info,
-                    "type": error_type,
-                    "code": error_code
-                }
+                "error": str(e),
+                "detail": "参数错误",
+            }
+        )
+    except ClientAPIError as e:
+        # 处理已知的客户端错误
+        logger.error("处理请求时发生客户端错误: %s", str(e))
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "error": e.error,
+                "detail": e.detail,
             }
         )
     except Exception as e:
         # 处理未预期的错误
-        logger.error("处理请求时发生未预期错误: %s", str(e))
+        logger.exception("处理请求时发生未预期错误")
         return JSONResponse(
             status_code=500,
             content={
-                "error": {
-                    "message": str(e),
-                    "type": "其他错误",
-                    "code": 500
-                }
+                "error": str(e),
+                "detail": "其他错误",
             }
         )
 
@@ -161,8 +145,14 @@ async def cancel_request(request: Request):
         else:
             return {"status": "error", "message": f"未找到请求 {chat_id} 或已完成"}
     except Exception as e:
-        logger.error("取消请求时发生错误: %s", e)
-        return {"status": "error", "message": str(e)}
+        logger.exception("取消请求时发生错误")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "detail": "其他错误",
+            }
+        )
 
 
 @app.get("/v1/models", dependencies=[Depends(verify_api_key)])
@@ -176,8 +166,14 @@ async def list_models():
         models = model_manager.get_model_list()
         return {"object": "list", "data": models}
     except Exception as e:
-        logger.error("获取模型列表时发生错误: %s", e)
-        return {"error": str(e)}
+        logger.exception("获取模型列表时发生错误")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "detail": "其他错误",
+            }
+        )
 
 @app.get("/config")
 async def config_page():
@@ -192,8 +188,14 @@ async def config_page():
             return {"error": "配置页面文件不存在"}
         return FileResponse(html_path)
     except Exception as e:
-        logger.error("返回配置页面时发生错误: %s", e)
-        return {"error": str(e)}
+        logger.exception("返回配置页面时发生错误")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "detail": "其他错误",
+            }
+        )
 
 @app.get("/v1/config", dependencies=[Depends(verify_api_key)])
 async def get_config():
@@ -206,23 +208,11 @@ async def get_config():
         config = model_manager.get_config()
         return config
     except Exception as e:
-        logger.error("获取配置时发生错误: %s", e)
-        return {"error": str(e)}
-
-@app.post("/v1/config", dependencies=[Depends(verify_api_key)])
-async def update_config(request: Request):
-    """更新模型配置
-
-    接收并保存新的模型配置数据
-    """
-    try:
-        # 获取请求体
-        body = await request.json()
-
-        # 使用 ModelManager 更新配置
-        model_manager.update_config(body)
-
-        return {"message": "配置已更新"}
-    except Exception as e:
-        logger.error("更新配置时发生错误: %s", e)
-        return {"error": str(e)}
+        logger.exception("获取配置时发生错误")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "detail": "其他错误",
+            }
+        )
