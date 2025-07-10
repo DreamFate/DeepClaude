@@ -45,9 +45,13 @@ async def verify_api_key(authorization: Optional[str] = Header(None)) -> None:
 # 加载环境变量
 load_dotenv()
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "a7e2f8d1c6b3e5a9d8c2f5e7b1a3d6c9")
-ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", str(7 * 24 * 60)))
+# 优先使用系统环境变量
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or \
+    os.getenv("JWT_SECRET_KEY", "a7e2f8d1c6b3e5a9d8c2f5e7b1a3d6c9")
+ALGORITHM = os.environ.get("JWT_ALGORITHM") or \
+    os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES") or \
+    os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", str(7 * 24 * 60)))
 
 def get_api_key_hash():
     """获取当前系统API密钥的哈希值"""
@@ -63,6 +67,7 @@ def generate_token(data: dict):
     """生成JWT令牌"""
     to_encode = data.copy()
     # 设置过期时间
+    logger.info("生成JWT令牌: %s", ACCESS_TOKEN_EXPIRE_MINUTES)
     expire = datetime.now(tz=timezone.utc)+ timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
 
