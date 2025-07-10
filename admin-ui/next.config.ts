@@ -9,10 +9,22 @@ const nextConfig: NextConfig = {
       {
         source: '/api/:path*',
         destination: `${API_URL}/:path*`, // 代理到FastAPI后端
+        basePath: false,
+      },
+    ];
+  },
+  async redirects() {
+    return [
+      {
+        source: '/',
+        destination: '/aipotluck',
+        basePath: false,
+        permanent: false,
       },
     ];
   },
   devIndicators:false,
+  basePath: '/aipotluck',
 };
 
 export default nextConfig;

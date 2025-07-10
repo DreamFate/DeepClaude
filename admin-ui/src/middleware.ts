@@ -3,17 +3,20 @@ import type { NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
   const token = request.cookies.get("auth_token");
-  
+
+  // 考虑basePath，获取不包含basePath的路径
+  const { pathname } = request.nextUrl;
+
   // 如果没有token且不是访问登录页，则重定向到登录页
-  if (!token && !request.nextUrl.pathname.startsWith("/auth")) {
+  if (!token && !pathname.startsWith("/auth")) {
     return NextResponse.redirect(new URL("/auth", request.url));
   }
-  
+
   // 如果有token且访问登录页，则重定向到首页
-  if (token && request.nextUrl.pathname.startsWith("/auth")) {
+  if (token && pathname.startsWith("/auth")) {
     return NextResponse.redirect(new URL("/", request.url));
   }
-  
+
   return NextResponse.next();
 }
 
