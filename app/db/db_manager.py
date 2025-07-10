@@ -191,7 +191,7 @@ class DBManager:
     def get_provider(
         self,
         provider_name: Optional[str] = None,
-        provider_id: Optional[int] = None
+        provider_id: Optional[str] = None
     ) -> Optional[ProviderConfig]:
         """获取指定供应商配置
 
@@ -225,14 +225,14 @@ class DBManager:
                 return ProviderConfig.from_db_row(row)
             return None
 
-    def save_provider(self, config: ProviderConfig) -> int:
+    def save_provider(self, config: ProviderConfig) -> dict:
         """保存供应商配置
 
         Args:
             config: 供应商配置
 
         Returns:
-            int: 保存后的ID
+            str: 保存后的ID
         """
 
         db_dict = config.to_db_dict()
@@ -275,7 +275,7 @@ class DBManager:
             # 如果查询失败，返回基本信息
             return {"id": db_dict["id"]}
 
-    def delete_provider(self, provider_id: int) -> bool:
+    def delete_provider(self, provider_id: str) -> bool:
         """删除供应商配置
 
         Args:
@@ -350,7 +350,7 @@ class DBManager:
     def get_model(
         self,
         model_name: Optional[str] = None,
-        models_id: Optional[int] = None,
+        models_id: Optional[str] = None,
         is_valid: Optional[bool] = None
     ) -> Optional[ModelConfig]:
         """获取指定模型配置
@@ -394,14 +394,14 @@ class DBManager:
                 return ModelConfig.from_db_row(row)
             return None
 
-    def save_model(self, config: ModelConfig) -> bool:
+    def save_model(self, config: ModelConfig) -> dict:
         """保存模型配置
 
         Args:
             config: 模型配置
 
         Returns:
-            bool: 是否保存成功
+            dict: 保存后的ID
         """
         db_dict = config.to_db_dict()
         # 先检查是否存在同名供应商（排除自身ID）
@@ -446,7 +446,7 @@ class DBManager:
             # 如果查询失败，返回基本信息
             return {"id": db_dict["id"]}
 
-    def delete_model(self, models_id: int) -> bool:
+    def delete_model(self, models_id: str) -> bool:
         """删除模型配置
 
         Args:
@@ -515,7 +515,7 @@ class DBManager:
     def get_composite_model(
         self,
         model_name: Optional[str]=None,
-        composite_models_id:Optional[int]=None,
+        composite_models_id:Optional[str]=None,
         is_valid:Optional[bool]=None
     ) -> Optional[CompositeModelConfig]:
         """获取指定组合模型配置
@@ -559,14 +559,14 @@ class DBManager:
                 return CompositeModelConfig.from_db_row(row)
             return None
 
-    def save_composite_model(self, config: CompositeModelConfig) -> bool:
+    def save_composite_model(self, config: CompositeModelConfig) -> dict:
         """保存组合模型配置
 
         Args:
             config: 组合模型配置
 
         Returns:
-            bool: 是否保存成功
+            dict: 保存后的ID
         """
         db_dict = config.to_db_dict()
         # 先检查是否存在同名供应商（排除自身ID）
@@ -605,7 +605,7 @@ class DBManager:
             # 如果查询失败，返回基本信息
             return {"id": db_dict["id"]}
 
-    def delete_composite_model(self, composite_id: int) -> bool:
+    def delete_composite_model(self, composite_id: str) -> bool:
         """删除组合模型配置
 
         Args:

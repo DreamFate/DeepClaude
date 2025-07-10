@@ -13,6 +13,8 @@ services:
       - ./app:/app/app
       - deepclaude_data:/app/data
     restart: unless-stopped
+    environment:
+      - DB_PATH=/app/data/deepclaude.db
 
   frontend:
     build:
@@ -25,6 +27,8 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    volumes:
+      - ./admin-ui/.env:/app/.env
 
 volumes:
   deepclaude_data:

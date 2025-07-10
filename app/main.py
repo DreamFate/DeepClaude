@@ -288,7 +288,7 @@ async def get_all_valid_provider():
     return result
 
 @app.get("/providers/get_provider_for_id/{provider_id}", dependencies=[Depends(get_current_user)])
-async def get_provider_for_id(provider_id: int):
+async def get_provider_for_id(provider_id: str):
     """获取指定供应商配置"""
     return model_manager.db_manager.get_provider(provider_id=provider_id)
 
@@ -318,7 +318,7 @@ async def save_provider(provider: ProviderConfig):
         )
 
 @app.delete("/providers/delete_provider/{provider_id}", dependencies=[Depends(get_current_user)])
-async def delete_provider(provider_id: int):
+async def delete_provider(provider_id: str):
     """删除供应商配置"""
     try:
         return model_manager.db_manager.delete_provider(provider_id)
@@ -361,7 +361,7 @@ async def get_all_valid_models():
     return result
 
 @app.get("/models/get_model_for_id/{model_id}", dependencies=[Depends(get_current_user)])
-async def get_model_for_id(model_id: int):
+async def get_model_for_id(model_id: str):
     """获取指定模型配置"""
     return model_manager.db_manager.get_model(models_id=model_id)
 
@@ -391,7 +391,7 @@ async def save_model(model: ModelConfig):
         )
 
 @app.delete("/models/delete_model/{model_id}", dependencies=[Depends(get_current_user)])
-async def delete_model(model_id: int):
+async def delete_model(model_id: str):
     """删除模型配置"""
     try:
         return model_manager.db_manager.delete_model(model_id)
@@ -416,7 +416,7 @@ async def get_all_composite_models():
     return model_manager.db_manager.get_all_composite_models()
 
 @app.get("/composite_models/get_composite_model_for_id/{composite_model_id}", dependencies=[Depends(get_current_user)])
-async def get_composite_model_for_id(composite_model_id: int):
+async def get_composite_model_for_id(composite_model_id: str):
     """获取指定组合模型配置"""
     return model_manager.db_manager.get_composite_model(composite_models_id=composite_model_id)
 
@@ -446,7 +446,7 @@ async def save_composite_model(composite_model: CompositeModelConfig):
         )
 
 @app.delete("/composite_models/delete_composite_model/{composite_model_id}", dependencies=[Depends(get_current_user)])
-async def delete_composite_model(composite_model_id: int):
+async def delete_composite_model(composite_model_id: str):
     """删除组合模型配置"""
     try:
         return model_manager.db_manager.delete_composite_model(composite_model_id)
