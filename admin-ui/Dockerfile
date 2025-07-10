@@ -7,6 +7,9 @@ WORKDIR /app
 # 复制package.json和package-lock.json
 COPY package*.json ./
 
+# 复制环境变量文件
+COPY .env* ./
+
 # 安装依赖
 RUN npm ci
 
@@ -26,6 +29,7 @@ COPY --from=build /app/.next ./.next
 COPY --from=build /app/public ./public
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/next.config.ts ./
+COPY --from=build /app/.env* ./
 
 # 只安装生产依赖
 RUN npm ci --production
