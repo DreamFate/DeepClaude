@@ -54,7 +54,7 @@ class SQLiteConnectionPool:
             conn.row_factory = sqlite3.Row
 
             self.pool[index] = conn
-            logger.debug("创建连接 #%s 成功", index)
+            # logger.debug("创建连接 #%s 成功", index)
             return conn
         except sqlite3.Error as e:
             logger.error("创建连接 #%s 失败: %s", index, e)
@@ -111,7 +111,7 @@ class SQLiteConnectionPool:
 
                     # 标记为使用中
                     self.in_use[index] = True
-                    logger.debug("获取连接 #%s，剩余可用连接: %s", index, len(self.available))
+                    # logger.debug("获取连接 #%s，剩余可用连接: %s", index, len(self.available))
                     return self.pool[index]
 
             # 没有可用连接，等待后重试
@@ -133,7 +133,7 @@ class SQLiteConnectionPool:
                     if i not in self.available:
                         self.available.append(i)
                     self.in_use[i] = False
-                    logger.debug("释放连接 #%s，当前可用连接: %s", i, len(self.available))
+                    # logger.debug("释放连接 #%s，当前可用连接: %s", i, len(self.available))
                     return
 
             logger.warning("尝试释放不属于连接池的连接")
@@ -185,15 +185,16 @@ class DBConnection:
             if exc_type:
                 # 发生异常，回滚事务
                 try:
+                    logger.info("回滚事务")
                     self.conn.rollback()
                 except sqlite3.Error:
-                    pass
+                    logger.error("回滚事务失败")
             else:
                 # 正常退出，提交事务
                 try:
                     self.conn.commit()
                 except sqlite3.Error:
-                    pass
+                    logger.error("提交事务失败")
 
             self.pool.release_connection(self.conn)
 
@@ -215,8 +216,7 @@ class DBConnection:
 
         if params:
             return self.cursor.execute(sql, params)
-        else:
-            return self.cursor.execute(sql)
+        return self.cursor.execute(sql)
 
     def fetchone(self):
         """获取一条记录"""

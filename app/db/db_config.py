@@ -6,12 +6,13 @@ import json
 @dataclass
 class ModelConfig:
     """模型配置"""
-    id: Optional[int] = None
+    id: Optional[str] = None
     model_name: str = ""
     model_id: str = ""
-    provider_id: Optional[int] = None
+    provider_id: Optional[str] = None
     model_type: str = ""
     model_format: str = ""
+    model_custom_json: Optional[str] = None
     is_origin_reasoning: bool = False
     is_valid: bool = False
     is_origin_output: bool = False
@@ -27,6 +28,7 @@ class ModelConfig:
             provider_id=row["provider_id"],
             model_type=row["model_type"],
             model_format=row["model_format"],
+            model_custom_json=row["model_custom_json"],
             is_origin_reasoning=bool(row["is_origin_reasoning"]),
             is_valid=bool(row["is_valid"]),
             is_origin_output=bool(row["is_origin_output"]),
@@ -41,6 +43,7 @@ class ModelConfig:
             "provider_id": self.provider_id,
             "model_type": self.model_type,
             "model_format": self.model_format,
+            "model_custom_json": self.model_custom_json,
             "is_origin_reasoning": 1 if self.is_origin_reasoning else 0,
             "is_valid": 1 if self.is_valid else 0,
             "is_origin_output": 1 if self.is_origin_output else 0,
@@ -49,7 +52,7 @@ class ModelConfig:
 @dataclass
 class ProviderConfig:
     """供应商配置数据类"""
-    id: Optional[int] = None
+    id: Optional[str] = None
     provider_name: str = ""
     api_key: str = ""
     api_base_url: str = ""
@@ -99,10 +102,10 @@ class ProviderConfig:
 @dataclass
 class CompositeModelConfig:
     """组合模型配置数据类"""
-    id: Optional[int] = None
+    id: Optional[str] = None
     model_name: str = ""
-    reasoner_model_id: int = 0
-    general_model_id: int = 0
+    reasoner_model_id: Optional[str] = None
+    general_model_id: Optional[str] = None
     is_valid: bool = False
 
     @classmethod
@@ -181,24 +184,20 @@ class SystemSetting:
             Dict[str, Any]: 适用于数据库操作的字典
         """
         # 确定值的类型和字符串表示
-        if isinstance(self.setting_value, int) and self.setting_type != "bool":
-            type_name = "int"
-            str_value = str(self.setting_value)
-        elif isinstance(self.setting_value, float):
-            type_name = "float"
-            str_value = str(self.setting_value)
-        elif isinstance(self.setting_value, bool):
-            type_name = "bool"
-            str_value = "true" if self.setting_value else "false"
-        elif isinstance(self.setting_value, (dict, list)):
-            type_name = "json"
-            str_value = json.dumps(self.setting_value, ensure_ascii=False)
+        if self.setting_type == "int":
+            self.setting_value = str(self.setting_value)
+        elif self.setting_type == "float":
+            self.setting_value = str(self.setting_value)
+        elif self.setting_type == "bool":
+            self.setting_value = "true" if self.setting_value else "false"
+        elif self.setting_type == "json":
+            self.setting_value = json.dumps(self.setting_value, ensure_ascii=False)
         else:
-            type_name = "str"
-            str_value = str(self.setting_value)
+            self.setting_type = "str"
+            self.setting_value = str(self.setting_value)
 
         return {
             "setting_key": self.setting_key,
-            "setting_value": str_value,
-            "setting_type": type_name
+            "setting_value": self.setting_value,
+            "setting_type": self.setting_type
         }

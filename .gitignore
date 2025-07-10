@@ -23,4 +23,3 @@ wheels/
 # model_manager
 model_manager/model_configs.json
 /data
-/tests

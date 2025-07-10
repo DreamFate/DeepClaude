@@ -2,42 +2,13 @@
 使用连接池的数据库管理器实现
 """
 
-import sqlite3
-
-from typing import Dict, Any, Optional,Callable
-import functools
+import uuid
+from typing import Dict, Any, Optional,List
 
 from app.db.db_pool import get_db_connection, close_db_pool,get_db_pool
 from app.db.db_config import ProviderConfig,ModelConfig,CompositeModelConfig,SystemSetting
 from app.utils.logger import logger
-
-
-# 在文件顶部添加自定义异常类
-class DBManagerError(Exception):
-    """数据库管理器中的非数据库相关错误"""
-
-def handle_db_errors(operation_name: str):
-    """处理数据库错误的装饰器
-
-    Args:
-        operation_name: 操作名称，用于日志记录
-    """
-    def decorator(func: Callable):
-        @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
-            try:
-                return func(self, *args, **kwargs)
-            except sqlite3.Error as e:
-                error_msg = f"{operation_name},有数据库相关错误: {str(e)}"
-                logger.error(error_msg)
-                raise sqlite3.Error(error_msg) from e
-            except Exception as e:
-                error_msg = f"{operation_name},有其他错误: {str(e)}"
-                logger.error(error_msg)
-                raise DBManagerError(error_msg) from e
-        return wrapper
-    return decorator
-
+from app.utils.error import DBManagerError
 
 class DBManager:
     """使用连接池的数据库管理器"""
@@ -72,7 +43,6 @@ class DBManager:
         get_db_pool()
         logger.info("打开数据库连接池")
 
-    @handle_db_errors("初始化系统设置")
     def _init_system_settings(self):
         """初始化系统设置数据
 
@@ -81,11 +51,9 @@ class DBManager:
         """
         # 检查是否已有数据
         with get_db_connection() as db:
-            db.execute("SELECT COUNT(*) as count FROM system_settings")
-            row = db.fetchone()
-            if row and row["count"] > 0:
-                logger.info("系统设置数据已存在，跳过默认设置")
-                return
+            # 先查出所有已存在的key
+            db.execute("SELECT setting_key FROM system_settings")
+            existing_keys = {row["setting_key"] for row in db.fetchall()}
 
             # 默认系统设置
             default_settings = [
@@ -95,53 +63,62 @@ class DBManager:
                 ("api_key", "123456", "str"),
                 # 代理设置
                 ("proxy_address", "127.0.0.1:7890", "str"),
-                # 缓存大小
-                ("model_cache_size", "5", "int"),
                 # TCP连接池设置
                 ("tcp_connector_limit", "1000", "int"),
                 ("tcp_connector_limit_per_host", "100", "int"),
                 ("tcp_keepalive_timeout", "30.0", "float"),
             ]
 
-            # 插入默认设置
-            for key, value, type_name in default_settings:
-                db.execute("""
-                INSERT OR IGNORE INTO system_settings (setting_key, setting_value, setting_type)
-                VALUES (?, ?, ?)
-                """, (key, value, type_name))
+            # 只插入缺失的key
+            to_insert = [item for item in default_settings if item[0] not in existing_keys]
+            for key, value, type_name in to_insert:
+                db.execute(
+                    """
+                    INSERT INTO system_settings
+                     (setting_key, setting_value, setting_type)
+                     VALUES (?, ?, ?)
+                    """,
+                    (key, value, type_name)
+                )
+            if to_insert:
+                logger.info("插入了 %d 条默认系统设置", len(to_insert))
+            else:
+                logger.info("所有默认系统设置已存在，无需插入")
 
-            logger.info("初始化了 %d 条系统设置数据",len(default_settings))
-
-    @handle_db_errors("初始化数据库")
     def _init_db(self):
         """初始化数据库，创建必要的表"""
         with get_db_connection() as db:
             # 创建供应商表
             db.execute('''
             CREATE TABLE IF NOT EXISTS providers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 provider_name TEXT NOT NULL UNIQUE,  -- 供应商名称，如 'openai', 'anthropic', 'deepseek' 等
                 api_key TEXT NOT NULL,               -- API密钥
                 api_base_url TEXT NOT NULL,          -- 基础URL
                 api_request_address TEXT NOT NULL,   -- 请求地址
                 provider_format TEXT NOT NULL,       -- 供应商格式，如 'openrouter', 'anthropic', 'oneapi' , 'deepseek' 等
                 is_proxy_open INTEGER,               -- 是否启用代理
-                is_valid INTEGER NOT NULL            -- 是否有效
+                is_valid INTEGER NOT NULL,           -- 是否有效
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
 
             # 创建models表
             db.execute('''
             CREATE TABLE IF NOT EXISTS models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 provider_id INTEGER NOT NULL,                   -- 对应的供应商ID
                 model_type TEXT NOT NULL,                       -- 'reasoner' 或 'general'
                 model_id TEXT NOT NULL,                         -- 模型ID
                 model_name TEXT NOT NULL UNIQUE,                -- 模型名称
                 model_format TEXT NOT NULL,                     -- 模型格式，如 'deepseek', 'anthropic', 'openai_compatible' 等
+                model_custom_json TEXT,                         -- 自定义JSON
                 is_valid INTEGER NOT NULL,                      -- 是否有效
                 is_origin_reasoning INTEGER,                    -- 仅对推理模型有意义
                 is_origin_output INTEGER,                       -- 是否使用原生输出
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (provider_id) REFERENCES providers(id)
             )
             ''')
@@ -149,11 +126,13 @@ class DBManager:
             # 创建composite_models表
             db.execute('''
             CREATE TABLE IF NOT EXISTS composite_models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 model_name TEXT NOT NULL UNIQUE,                    -- 组合模型名称
                 reasoner_model_id INTEGER NOT NULL,                 -- 推理模型ID
                 general_model_id INTEGER NOT NULL,                  -- 通用模型ID
                 is_valid INTEGER NOT NULL,                          -- 是否有效
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (reasoner_model_id) REFERENCES models(id),
                 FOREIGN KEY (general_model_id) REFERENCES models(id)
             )
@@ -172,15 +151,14 @@ class DBManager:
 
     # ===== Providers 操作 =====
 
-    @handle_db_errors("获取所有供应商配置")
-    def get_all_providers(self, is_valid: Optional[bool] = None) -> Dict[str, ProviderConfig]:
+    def get_all_providers(self, is_valid: Optional[bool] = None) -> List[ProviderConfig]:
         """获取所有供应商配置
 
         Args:
             is_valid: 是否只返回有效的供应商配置
 
         Returns:
-            Dict[str, ProviderConfig]: 供应商配置字典，键为供应商名称
+            List[ProviderConfig]: 供应商配置列表
         """
         with get_db_connection() as db:
             sql = """
@@ -194,6 +172,8 @@ class DBManager:
                 sql += " AND is_valid = ?"
                 params.append(is_valid)
 
+            sql += " ORDER BY is_valid DESC, created_at ASC "
+
             if params:
                 db.execute(sql, params)
             else:
@@ -201,14 +181,13 @@ class DBManager:
 
             rows = db.fetchall()
 
-            result = {}
+            result = []
             for row in rows:
                 config = ProviderConfig.from_db_row(row)
-                result[config.provider_name] = config
+                result.append(config)
 
             return result
 
-    @handle_db_errors("获取指定供应商配置")
     def get_provider(
         self,
         provider_name: Optional[str] = None,
@@ -246,18 +225,22 @@ class DBManager:
                 return ProviderConfig.from_db_row(row)
             return None
 
-    @handle_db_errors("保存供应商配置")
-    def save_provider(self, config: ProviderConfig) -> bool:
+    def save_provider(self, config: ProviderConfig) -> int:
         """保存供应商配置
 
         Args:
             config: 供应商配置
 
         Returns:
-            bool: 是否保存成功
+            int: 保存后的ID
         """
 
         db_dict = config.to_db_dict()
+        # 先检查是否存在同名供应商（排除自身ID）
+        existing = self.get_provider(provider_name=config.provider_name)
+        if existing and existing.id != config.id:
+            # 存在同名但不是自己，返回错误
+            raise DBManagerError(f"供应商名称 '{config.provider_name}' 已存在")
 
         with get_db_connection() as db:
             if config.id:
@@ -270,19 +253,28 @@ class DBManager:
                     api_request_address = :api_request_address,
                     provider_format = :provider_format,
                     is_valid = :is_valid,
-                    is_proxy_open = :is_proxy_open
+                    is_proxy_open = :is_proxy_open,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = :id
                 """, db_dict)
             else:
+                my_uuid = str(uuid.uuid4())
+                db_dict["id"] = my_uuid
                 # 插入
                 db.execute("""
                 INSERT INTO providers (
-                    provider_name, api_key, api_base_url, api_request_address, provider_format, is_valid, is_proxy_open
-                ) VALUES (:provider_name, :api_key, :api_base_url, :api_request_address, :provider_format, :is_valid, :is_proxy_open)
+                    id, provider_name, api_key, api_base_url, api_request_address, provider_format, is_valid, is_proxy_open
+                ) VALUES (:id, :provider_name, :api_key, :api_base_url, :api_request_address, :provider_format, :is_valid, :is_proxy_open)
                 """, db_dict)
-            return True
 
-    @handle_db_errors("删除供应商配置")
+            # 获取最新数据
+            db.execute("SELECT * FROM providers WHERE id = ?", (db_dict["id"],))
+            row = db.fetchone()
+            if row:
+                return dict(row)
+            # 如果查询失败，返回基本信息
+            return {"id": db_dict["id"]}
+
     def delete_provider(self, provider_id: int) -> bool:
         """删除供应商配置
 
@@ -293,17 +285,22 @@ class DBManager:
             bool: 是否删除成功
         """
         with get_db_connection() as db:
+            # 检查是否有模型依赖此供应商
+            db.execute("SELECT COUNT(*) as count FROM models WHERE provider_id = ?", (provider_id,))
+            row = db.fetchone()
+            if row and row["count"] > 0:
+                raise DBManagerError(f"无法删除供应商：有{row['count']}个模型依赖此供应商")
+
             db.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
             return True
 
     # ===== Models 操作 =====
 
-    @handle_db_errors("获取所有模型配置")
     def get_all_models(
         self,
         model_type:Optional[str]=None,
         is_valid:Optional[bool]=None
-    ) -> Dict[str, ModelConfig]:
+    ) -> List[ModelConfig]:
         """获取所有模型配置
 
         Args:
@@ -311,12 +308,13 @@ class DBManager:
             is_valid: 可选，是否只获取有效的模型
 
         Returns:
-            Dict[str, ModelConfig]: 模型配置字典，键为模型名称
+            List[ModelConfig]: 模型配置列表
         """
         with get_db_connection() as db:
             # 基础SQL查询
             sql = """
             SELECT id, model_id, model_name, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
+            model_custom_json,
             is_origin_output
             FROM models
             WHERE 1=1
@@ -332,6 +330,8 @@ class DBManager:
                 sql += " AND is_valid = ?"
                 params.append(is_valid_int)
 
+            sql += " ORDER BY is_valid DESC, created_at ASC "
+
             # 执行查询
             if params:
                 db.execute(sql, params)
@@ -341,14 +341,12 @@ class DBManager:
             rows = db.fetchall()
 
             # 处理结果
-            result = {}
+            result = []
             for row in rows:
-                config = ModelConfig.from_db_row(row)
-                result[config.model_name] = config
+                result.append(ModelConfig.from_db_row(row))
 
             return result
 
-    @handle_db_errors("获取指定模型配置")
     def get_model(
         self,
         model_name: Optional[str] = None,
@@ -368,6 +366,7 @@ class DBManager:
         with get_db_connection() as db:
             sql = """
             SELECT id, model_id, model_name, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
+            model_custom_json,
             is_origin_output
             FROM models
             WHERE 1=1
@@ -395,7 +394,6 @@ class DBManager:
                 return ModelConfig.from_db_row(row)
             return None
 
-    @handle_db_errors("保存模型配置")
     def save_model(self, config: ModelConfig) -> bool:
         """保存模型配置
 
@@ -406,33 +404,48 @@ class DBManager:
             bool: 是否保存成功
         """
         db_dict = config.to_db_dict()
+        # 先检查是否存在同名供应商（排除自身ID）
+        existing = self.get_model(model_name=config.model_name)
+        if existing and existing.id != config.id:
+            # 存在同名但不是自己，返回错误
+            raise DBManagerError(f"模型名称 '{config.model_name}' 已存在")
 
         with get_db_connection() as db:
             if config.id:
                 # 更新
                 db.execute('''
                 UPDATE models SET
+                    model_name = :model_name,
                     model_id = :model_id,
                     provider_id = :provider_id,
                     is_origin_reasoning = :is_origin_reasoning,
                     is_valid = :is_valid,
                     model_type = :model_type,
                     model_format = :model_format,
-                    is_origin_output = :is_origin_output
+                    model_custom_json = :model_custom_json,
+                    is_origin_output = :is_origin_output,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = :id
                 ''', db_dict)
             else:
+                my_uuid = str(uuid.uuid4())
+                db_dict["id"] = my_uuid
                 # 插入
                 db.execute('''
                 INSERT INTO models (
-                    model_name, model_id, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
-                    is_origin_output
-                ) VALUES (:model_name, :model_id, :provider_id, :is_origin_reasoning, :is_valid, :model_type, :model_format, :is_origin_output)
+                    id, model_name, model_id, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
+                    model_custom_json, is_origin_output
+                ) VALUES (:id, :model_name, :model_id, :provider_id, :is_origin_reasoning, :is_valid, :model_type, :model_format, :model_custom_json, :is_origin_output)
                 ''', db_dict)
 
-            return True
+            # 获取最新数据
+            db.execute("SELECT * FROM models WHERE id = ?", (db_dict["id"],))
+            row = db.fetchone()
+            if row:
+                return dict(row)
+            # 如果查询失败，返回基本信息
+            return {"id": db_dict["id"]}
 
-    @handle_db_errors("删除模型配置")
     def delete_model(self, models_id: int) -> bool:
         """删除模型配置
 
@@ -443,20 +456,31 @@ class DBManager:
             bool: 是否删除成功
         """
         with get_db_connection() as db:
+            # 检查是否有模型依赖此供应商
+            db.execute(
+                """
+                SELECT COUNT(*) as count FROM composite_models
+                 WHERE general_model_id = ? OR reasoner_model_id = ?
+                """,
+                (models_id, models_id)
+            )
+            row = db.fetchone()
+            if row and row["count"] > 0:
+                raise DBManagerError(f"无法删除模型：有{row['count']}个组合模型依赖此供应商")
+
             db.execute("DELETE FROM models WHERE id = ?", (models_id,))
             return True
 
     # ===== Composite Models 操作 =====
 
-    @handle_db_errors("获取所有组合模型配置")
-    def get_all_composite_models(self, is_valid=None) -> Dict[str, CompositeModelConfig]:
+    def get_all_composite_models(self, is_valid=None) -> List[CompositeModelConfig]:
         """获取所有组合模型配置
 
         Args:
             is_valid: 是否只获取有效的组合模型
 
         Returns:
-            Dict[str, CompositeModelConfig]: 组合模型配置字典，键为模型名称
+            List[CompositeModelConfig]: 组合模型配置列表
         """
         with get_db_connection() as db:
             sql = """
@@ -472,6 +496,8 @@ class DBManager:
                 sql += " AND is_valid = ?"
                 params.append(is_valid)
 
+            sql += " ORDER BY is_valid DESC, created_at ASC "
+
             if params:
                 db.execute(sql, params)
             else:
@@ -479,14 +505,13 @@ class DBManager:
 
             rows = db.fetchall()
 
-            result = {}
+            result = []
             for row in rows:
                 config = CompositeModelConfig.from_db_row(row)
-                result[config.model_name] = config
+                result.append(config)
 
             return result
 
-    @handle_db_errors("获取指定组合模型配置")
     def get_composite_model(
         self,
         model_name: Optional[str]=None,
@@ -534,7 +559,6 @@ class DBManager:
                 return CompositeModelConfig.from_db_row(row)
             return None
 
-    @handle_db_errors("保存组合模型配置")
     def save_composite_model(self, config: CompositeModelConfig) -> bool:
         """保存组合模型配置
 
@@ -545,28 +569,42 @@ class DBManager:
             bool: 是否保存成功
         """
         db_dict = config.to_db_dict()
+        # 先检查是否存在同名供应商（排除自身ID）
+        existing = self.get_composite_model(model_name=config.model_name)
+        if existing and existing.id != config.id:
+            # 存在同名但不是自己，返回错误
+            raise DBManagerError(f"组合模型名称 '{config.model_name}' 已存在")
 
         with get_db_connection() as db:
             if config.id:
                 # 更新
                 db.execute("""
                 UPDATE composite_models SET
+                    model_name = :model_name,
                     reasoner_model_id = :reasoner_model_id,
                     general_model_id = :general_model_id,
-                    is_valid = :is_valid
+                    is_valid = :is_valid,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = :id
                 """, db_dict)
             else:
+                my_uuid = str(uuid.uuid4())
+                db_dict["id"] = my_uuid
                 # 插入
                 db.execute("""
                 INSERT INTO composite_models (
-                    model_name, reasoner_model_id, general_model_id, is_valid
-                ) VALUES (:model_name, :reasoner_model_id, :general_model_id, :is_valid)
+                    id, model_name, reasoner_model_id, general_model_id, is_valid
+                ) VALUES (:id, :model_name, :reasoner_model_id, :general_model_id, :is_valid)
                 """, db_dict)
 
-            return True
+            # 获取最新数据
+            db.execute("SELECT * FROM composite_models WHERE id = ?", (db_dict["id"],))
+            row = db.fetchone()
+            if row:
+                return dict(row)
+            # 如果查询失败，返回基本信息
+            return {"id": db_dict["id"]}
 
-    @handle_db_errors("删除组合模型配置")
     def delete_composite_model(self, composite_id: int) -> bool:
         """删除组合模型配置
 
@@ -582,7 +620,6 @@ class DBManager:
 
     # ===== 系统设置操作 =====
 
-    @handle_db_errors("获取系统设置")
     def get_setting(self, key: str) -> Optional[SystemSetting]:
         """获取系统设置
 
@@ -604,7 +641,6 @@ class DBManager:
 
             return None
 
-    @handle_db_errors("获取所有系统设置")
     def get_all_settings(self) -> Dict[str, SystemSetting]:
         """获取所有系统设置
 
@@ -622,42 +658,43 @@ class DBManager:
 
             return result
 
-    @handle_db_errors("保存系统设置")
-    def save_setting(self, setting: SystemSetting) -> bool:
+    def save_setting(self, settings: List[SystemSetting]) -> bool:
         """保存系统设置
 
         Args:
-            setting: 系统设置对象
+            settings: 系统设置对象
 
         Returns:
             bool: 是否保存成功
         """
-        db_dict = setting.to_db_dict()
+
 
         with get_db_connection() as db:
-            # 检查是否已存在
-            db.execute("SELECT 1 FROM system_settings WHERE setting_key = ?", (setting.setting_key,))
-            exists = db.fetchone() is not None
+            for setting in settings:
+                db_dict = setting.to_db_dict()
+                # 检查是否已存在
+                db.execute("SELECT 1 FROM system_settings WHERE setting_key = ?",
+                    (setting.setting_key,))
+                exists = db.fetchone() is not None
 
-            if exists:
-                # 更新
-                db.execute("""
-                UPDATE system_settings SET
-                    setting_value = :setting_value,
-                    setting_type = :setting_type
-                WHERE setting_key = :setting_key
-                """, db_dict)
-            else:
-                # 插入
-                db.execute("""
-                INSERT INTO system_settings (
-                    setting_key, setting_value, setting_type
-                ) VALUES (:setting_key, :setting_value, :setting_type)
-                """, db_dict)
+                if exists:
+                    # 更新
+                    db.execute("""
+                    UPDATE system_settings SET
+                        setting_value = :setting_value,
+                        setting_type = :setting_type
+                    WHERE setting_key = :setting_key
+                    """, db_dict)
+                else:
+                    # 插入
+                    db.execute("""
+                    INSERT INTO system_settings (
+                        setting_key, setting_value, setting_type
+                    ) VALUES (:setting_key, :setting_value, :setting_type)
+                    """, db_dict)
 
             return True
 
-    @handle_db_errors("删除系统设置")
     def delete_setting(self, key: str) -> bool:
         """删除系统设置
 
@@ -673,22 +710,36 @@ class DBManager:
 
     # ===== 配置导入导出 =====
 
-    @handle_db_errors("导出所有配置")
     def export_config(self) -> Dict[str, Any]:
         """导出所有配置
 
         Returns:
             Dict[str, Any]: 配置字典
         """
+        providers = self.get_all_providers()
+        result_providers = []
+        for provider in providers:
+            result_providers.append(provider.to_db_dict())
+        models = self.get_all_models()
+        result_models = []
+        for model in models:
+            result_models.append(model.to_db_dict())
+        composite_models = self.get_all_composite_models()
+        result_composite_models = []
+        for composite_model in composite_models:
+            result_composite_models.append(composite_model.to_db_dict())
+        system = self.get_all_settings()
+        result_system = []
+        for _,setting in system.items():
+            result_system.append(setting.to_db_dict())
         result = {
-            "providers": self.get_all_providers(),
-            "models": self.get_all_models(),
-            "composite_models": self.get_all_composite_models(),
-            "system": self.get_all_settings()
+            "providers": result_providers,
+            "models": result_models,
+            "composite_models": result_composite_models,
+            "system": result_system
         }
         return result
 
-    @handle_db_errors("导入配置")
     def import_config(self, config: Dict[str, Any]) -> bool:
         """导入配置
 
@@ -700,26 +751,43 @@ class DBManager:
         """
         with get_db_connection() as db:
             # 清空现有数据
-            db.execute("DELETE FROM providers")
-            db.execute("DELETE FROM models")
             db.execute("DELETE FROM composite_models")
+            db.execute("DELETE FROM models")
+            db.execute("DELETE FROM providers")
             db.execute("DELETE FROM system_settings")
 
             # 导入供应商
-            for provider_config in config.get("providers", {}).values():
-                self.save_provider(ProviderConfig.from_db_row(provider_config))
+            for provider_config in config.get("providers", {}):
+                db.execute("""
+                INSERT INTO providers (
+                    id, provider_name, api_key, api_base_url, api_request_address, provider_format, is_valid, is_proxy_open
+                ) VALUES (:id, :provider_name, :api_key, :api_base_url, :api_request_address, :provider_format, :is_valid, :is_proxy_open)
+                """, provider_config)
 
             # 导入模型
-            for model_config in config.get("models", {}).values():
-                self.save_model(ModelConfig.from_db_row(model_config))
+            for model_config in config.get("models", {}):
+                db.execute('''
+                INSERT INTO models (
+                    id, model_name, model_id, provider_id, is_origin_reasoning, is_valid, model_type, model_format,
+                    is_origin_output
+                ) VALUES (:id, :model_name, :model_id, :provider_id, :is_origin_reasoning, :is_valid, :model_type, :model_format, :is_origin_output)
+                ''', model_config)
 
             # 导入组合模型
-            for composite_config in config.get("composite_models", {}).values():
-                self.save_composite_model(CompositeModelConfig.from_db_row(composite_config))
+            for composite_config in config.get("composite_models", {}):
+                db.execute("""
+                INSERT INTO composite_models (
+                    id, model_name, reasoner_model_id, general_model_id, is_valid
+                ) VALUES (:id, :model_name, :reasoner_model_id, :general_model_id, :is_valid)
+                """, composite_config)
 
             # 导入系统设置
-            for setting_config in config.get("system", {}).values():
-                self.save_setting(SystemSetting.from_db_row(setting_config))
+            for setting_config in config.get("system", {}):
+                db.execute("""
+                INSERT INTO system_settings (
+                    setting_key, setting_value, setting_type
+                ) VALUES (:setting_key, :setting_value, :setting_type)
+                """, setting_config)
 
             return True
 

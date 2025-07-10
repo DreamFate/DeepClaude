@@ -42,3 +42,9 @@ async def handle_http_error(response: aiohttp.ClientResponse):
         detail = None
 
     raise ClientAPIError(status_code=status, error=error, detail=detail)
+
+class DBManagerError(Exception):
+    """数据库管理器中的非数据库相关错误"""
+    def __init__(self, message: str):
+        self.status_code = 500
+        self.message = message

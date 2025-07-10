@@ -106,6 +106,22 @@ class CompositeModel:
                 # 获取原始用户问题
                 original_user_content = target_messages[-1].get("content", "")
 
+                # 判断content是否为JSON格式
+                if isinstance(original_user_content, list):
+                    # 处理多模态输入
+                    text_parts = []
+                    for item in original_user_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+
+                    # 如果有文本部分，将其合并为一个字符串
+                    if text_parts:
+                        text_content = "\n".join(text_parts)
+                        logger.debug("提取到多模态输入中的文本内容: %s", text_content)
+                        original_user_content = text_content
+                    else:
+                        logger.warning("多模态输入中未找到文本内容")
+
                 combined_content = f"""
                 ******The above is user information*****
                 The following is the reasoning process of another model:****\n{temp_content}\n\n ****

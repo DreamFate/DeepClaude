@@ -1,5 +1,6 @@
 """模型管理器,参数验证和请求处理"""
 
+import logging
 from typing import Dict, Any, Tuple, List, Optional
 import asyncio
 import time
@@ -15,6 +16,7 @@ from app.clients.claude_client import ClaudeClient
 from app.clients.openai_compatible_client import OpenAICompatibleClient
 from app.clients.deepseek_client import DeepSeekClient
 from app.EnsembleModel.composite_model import CompositeModel
+from app.db.db_config import SystemSetting
 
 
 class ModelManager:
@@ -29,6 +31,8 @@ class ModelManager:
         self.cancel_events: Dict[str, asyncio.Event] = {}
         # 创建TCP连接池
         self.connector = self._create_tcp_connector()
+
+        logger.info("模型管理器初始化完成")
 
     async def stream_wrapper(self, async_iter, chat_id=None):
         """流式包装器"""
@@ -47,11 +51,11 @@ class ModelManager:
                 # 更新数据库中的chat_id状态
                 self.cancel_events.pop(chat_id, None)
 
-    def get_system_config(self) -> Dict[str, Any]:
+    def get_system_config(self) -> Dict[str, SystemSetting]:
         """获取系统配置信息
 
         Returns:
-            Dict[str, Any]: 系统配置信息
+            Dict[str, SystemSetting]: 系统配置信息
         """
         return self.db_manager.get_all_settings()
 
@@ -140,7 +144,8 @@ class ModelManager:
         Returns:
             Any: 模型实例
         """
-        isproxy_open = self.config.get("proxy_address") if provider.is_proxy_open else None
+        isproxy_open = self.config.get(
+            "proxy_address").setting_value if provider.is_proxy_open else None
         api_url = f"{provider.api_base_url}/{provider.api_request_address}"
         if model_format == "openai":
             instance = OpenAICompatibleClient(
@@ -204,7 +209,7 @@ class ModelManager:
     ) -> Any:
         """处理默认响应"""
 
-        provider: ProviderConfig = self.db_manager.get_provider(
+        provider = self.db_manager.get_provider(
             provider_id=model_details.provider_id
         )
         model_instance = self.create_instance(provider, model_details.model_format)
@@ -284,11 +289,11 @@ class ModelManager:
         reasoner_model_id = model_details.reasoner_model_id
         general_model_id = model_details.general_model_id
 
-        reasoner_model: Optional[ModelConfig] = self.db_manager.get_model(
+        reasoner_model = self.db_manager.get_model(
             models_id=reasoner_model_id,
             is_valid=True
         )
-        general_model: Optional[ModelConfig] = self.db_manager.get_model(
+        general_model = self.db_manager.get_model(
             models_id=general_model_id,
             is_valid=True
         )
@@ -352,7 +357,7 @@ class ModelManager:
                 "created": 1740268800,
                 "owned_by": "deepclaude",
                 "permission": {
-                    "id": "modelperm-{}".format(model_id),
+                    "id": f"modelperm-{model_id}",
                     "object": "model_permission",
                     "created": 1740268800,
                     "allow_create_engine": False,
@@ -375,7 +380,7 @@ class ModelManager:
                     "created": 1740268800,
                     "owned_by": "deepclaude",
                     "permission": {
-                        "id": "modelperm-{}".format(model_id),
+                        "id": f"modelperm-{model_id}",
                         "object": "model_permission",
                         "created": 1740268800,
                         "allow_create_engine": False,
@@ -468,5 +473,23 @@ class ModelManager:
             force_close=False,
             enable_cleanup_closed=True
         )
+
+    def set_tcp_connector(self):
+        """设置tcp连接池"""
+        self.update_config()
+        self.connector.close()
+        logger.info("tcp连接池已关闭")
+        self.connector = self._create_tcp_connector()
+
+
+    def set_log_level(self):
+        """设置日志级别"""
+        self.update_config()
+        logger.setLevel(getattr(logging, self.config.get("log_level").setting_value, logging.INFO))
+        logger.info("日志级别已设置为%s", logging.getLevelName(logger.level))
+
+    def update_config(self):
+        """更新配置"""
+        self.config = self.get_system_config()
 
 model_manager = ModelManager()
