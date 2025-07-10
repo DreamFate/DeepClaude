@@ -7,28 +7,27 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     volumes:
       - ./app:/app/app
       - deepclaude_data:/app/data
     restart: unless-stopped
     environment:
       - DB_PATH=/app/data/deepclaude.db
+      - JWT_SECRET_KEY=a7e2f8d1c6b3e5a9d8c2f5e7b1a3d6c9
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=43200
 
   frontend:
     build:
       context: ./admin-ui
       dockerfile: Dockerfile
+      args:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
     depends_on:
       - backend
     restart: unless-stopped
-    volumes:
-      - ./admin-ui/.env:/app/.env
 
 volumes:
   deepclaude_data:

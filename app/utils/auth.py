@@ -67,7 +67,6 @@ def generate_token(data: dict):
     """生成JWT令牌"""
     to_encode = data.copy()
     # 设置过期时间
-    logger.info("生成JWT令牌: %s", ACCESS_TOKEN_EXPIRE_MINUTES)
     expire = datetime.now(tz=timezone.utc)+ timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
 

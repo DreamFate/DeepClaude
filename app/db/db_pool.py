@@ -259,12 +259,15 @@ def get_db_pool(db_path=None, max_connections=5):
     pool = globals()["DB_POOL"]
     if pool is None:
         if db_path is None:
+            # 优先从环境变量获取数据库路径
+            db_path = os.environ.get("DB_PATH")
             # 默认数据库路径
-            db_path = os.path.join(
-                os.path.dirname(
+            if db_path is None:
+                db_path = os.path.join(
                     os.path.dirname(
-                        os.path.dirname(__file__))),
-                "data",
+                        os.path.dirname(
+                            os.path.dirname(__file__))),
+                    "data",
                 "deepclaude.db"
             )
         globals()["DB_POOL"] = SQLiteConnectionPool(db_path, max_connections)
