@@ -12,11 +12,11 @@ RUN pip install --no-cache-dir \
     python-dotenv==1.0.1 \
     pyyaml==6.0.2 \
     tiktoken==0.8.0 \
-    "uvicorn[standard]"
+    "uvicorn[standard]" \
+    pyjwt==2.8.0
 
 # 复制项目文件
 COPY ./app ./app
-COPY ./frontend ./frontend
 
 # 暴露端口
 EXPOSE 8000

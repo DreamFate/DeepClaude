@@ -1,14 +1,26 @@
-version: '1.0'
+version: '3'
 
 services:
-  deepclaude:
-    container_name: deepclaude
-    image: ghcr.io/erlichliu/deepclaude:latest
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     volumes:
-      - ./app/model_manager/model_configs.json:/app/app/model_manager/model_configs.json
-    restart: always # 建议添加 restart policy，确保容器意外退出后可以自动重启
+      - ./app:/app/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

@@ -7,9 +7,6 @@ wheels/
 *.egg-info
 
 # Environment
-.env
-.env.*
-!.env.example
 
 # Virtual environments
 .venv
@@ -21,5 +18,4 @@ wheels/
 .DS_Store
 
 # model_manager
-model_manager/model_configs.json
 /data
