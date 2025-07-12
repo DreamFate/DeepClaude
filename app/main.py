@@ -223,7 +223,7 @@ async def verify_key(request: Request, response: Response):
             httponly=True,
             secure=True,  # 在生产环境中设置为True
             samesite="lax",
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
 
         return {"success": True}
@@ -516,7 +516,7 @@ async def save_api_key(setting: List[SystemSetting], response: Response):
         response.delete_cookie(
             key="auth_token",
             httponly=True,
-            secure=False,  # 在生产环境中设置为True
+            secure=True,  # 在生产环境中设置为True
             samesite="lax"
         )
         return {"success": True}
